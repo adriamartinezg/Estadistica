@@ -210,6 +210,15 @@ PRJNA701955_SE <- SummarizedExperiment(
 )
 ```
 
+Este Summarized Experiment puede descargarse usando el siguiente código:
+
+```{r}
+#| label: download_SE
+#| eval: false
+
+save(PRJNA701955_SE, file="PRJNA701955_SE.rda")
+```
+
 # Análisis de expresión diferencial
 
 Realizaremos el análisis de expresión diferencial usando el paquete `edgeR`. Siempre que sea posible se aplicará tanto el test exacto como el test que usa un modelo lineal generalizado (mediante una distribución binomial negativa) para realizar los análisis.
