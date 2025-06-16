@@ -6,6 +6,8 @@ author:
     affiliation: "Universitat de València"
     email: "adria2@alumni.uv.es"
 date: "`r Sys.Date()`"
+bibliography: "rnaseq.bib"
+csl: vancouver.csl
 format: 
     html:
       embed-resources: true
@@ -23,15 +25,16 @@ css: styles.css
 ---
 
 ```{r}
-#| label: setup
-#| include: false
-#| echo: false
-knitr::opts_knit$set(root.dir = "C:/Users/adria/Desktop/Master/Bioinformática estadística/")
+#| label: set_wd
+#| eval: false
+
+# Escoger el directorio actual para que funcione correctamente
+setwd("./")
 ```
 
 # Elección del estudio
 
-En este caso, se ha buscado en el *European Nucleotide Archive* (ENA), un dataset de RNASeq de *Caenorharbditis elegans* con ID del proyecto PRJNA701955, con correspondencia también en SRA y GEO, donde se pueden consultar más fácilmente los metadatos. Se compone de 18 muestras de fiferentes cepas de *C. elegans*, donde 9 han estado sometidas a hipoxia, mientras que el resto actúan como controles. En este caso se puede analizar qué genes pueden cambiar su expresión al cambiar esta condición experimental. Además, algunos de estos individuos son mutantes (*knock-out*) para distintos genes relacionados con la respuesta a hipoxia, como *hif-1* o *nhr*.
+En este caso, se ha buscado en el *European Nucleotide Archive* (ENA), un dataset de RNASeq de *Caenorharbditis elegans* con ID del proyecto [PRJNA701955](https://www.ebi.ac.uk/ena/browser/view/PRJNA701955?show=reads), con correspondencia también en SRA y GEO, donde se pueden consultar más fácilmente los metadatos. Se compone de 18 muestras de fiferentes cepas de *C. elegans*, donde 9 han estado sometidas a hipoxia, mientras que el resto actúan como controles. En este caso se puede analizar qué genes pueden cambiar su expresión al cambiar esta condición experimental. Además, algunos de estos individuos son mutantes (*knock-out*) para distintos genes relacionados con la respuesta a hipoxia, como *hif-1* o *nhr*.
 
 # Obtención de la matriz de conteos
 
@@ -130,7 +133,7 @@ Para un manejo de los grupos más sencillo posteriormente, se ha categorizado la
 ```{r}
 #| label: crear_datos
 #| echo: true
-#| include: false
+#| include: true
 
 # Matriz de conteos
 conteo<-assay(PRJNA701955)
@@ -221,7 +224,7 @@ save(PRJNA701955_SE, file="PRJNA701955_SE.rda")
 
 # Análisis de expresión diferencial
 
-Realizaremos el análisis de expresión diferencial usando el paquete `edgeR`. Siempre que sea posible se aplicará tanto el test exacto como el test que usa un modelo lineal generalizado (mediante una distribución binomial negativa) para realizar los análisis.
+Realizaremos el análisis de expresión diferencial usando el paquete `edgeR`. Siempre que sea posible se aplicará tanto el test exacto como el test que usa un modelo lineal generalizado (mediante una distribución binomial negativa) para realizar los análisis @edger.
 
 Inicialmente, se transformarán los distintos grupos con los que se trabajará en variables `factor`, con dos niveles cada uno. Para un mejor análisis, se agruparán en una variable categórica "mutant" todas las muestras que no sean *wild-type*, y se contrastarán con esta, para ver posibles efectos de los *KO*. Por otro lado se evaluará el efecto de la hipoxia y finalmente, solo meidante test con un modelo lineal generalizado se evaaluará la posible interacción de ambas condiciones.
 
@@ -233,6 +236,7 @@ A continuación se preprocesarán las muestras, eliminando aquellas con datos fa
 #| output: false
 
 library(edgeR)
+load("PRJNA701955_SE.rda")
 
 # Variables a factor
 
@@ -267,7 +271,7 @@ También se crea un objeto `data.frame`con todas las anotaciones de los genes qu
 annot <- as.data.frame(rowData(PRJNA701955_SE))
 ```
 
-## Función de reporte de genes estadísticamente significativos:
+## Función de reporte de genes estadísticamente significativos
 
 Antes de proceder a realizar los análisis de expresión diferencial se muestra la función creada para reportar mediante una tabla en formato HTML los genes que resulten tener una significancia eestadística en los análisis realizados. Además se incluyen varios enlaces a bases de datos como ENTREZ, ENSEMBL, GENE ONTOLOGY o WORMBASE a partir de los respectivos códigos, para cada uno de ellos:
 
@@ -364,7 +368,7 @@ save_gene_report_html <- function(widget,
 }
 ```
 
-Esta función permite personalizar el nombre del archivo, el título, así como el color del fondo. Por defecto evita la aparición de advertenias y embebe todos los recursos en el HTML, evitando depender de carpetas externas.
+Esta función permite personalizar el nombre del archivo, el título, así como el color del fondo. Por defecto evita la aparición de advertencias y embebe todos los recursos en el HTML, evitando depender de carpetas externas.
 
 ## Análisis con edgeR clásico
 
@@ -704,7 +708,6 @@ kegg_genesets <- lapply(names(kegg_annotations), function(pathway_id) {
 
 gscKEGG0 <- GeneSetCollection(kegg_genesets)
 gscKEGG <- geneIds(gscKEGG0)
-
 ```
 
 Las colecciones creadas pueden guardarse usando estas funciones:
@@ -819,7 +822,20 @@ generate_ora_report <- function(df,
 
 # Análisis de sobrerepresentación de grupos de genes
 
-Para realizar el análisis de sobrerepresentación se utilizará el método `ora`, incluido en el paquete `tami`, que realiza un test de Fisher para comprobar cuantos genes pertenecientes a los grupos son significativos, según el *universo de genes* que tengamos.
+Para realizar el análisis de sobrerepresentación se utilizará el método `ora`, incluido en el paquete `tami`, que realiza un test de Fisher para comprobar cuantos genes pertenecientes a los grupos son significativos, según el *universo de genes* que tengamos @Ayala2025.
+
+En el caso que falle la conexión con las bases de datos en el `chunck`que crea las colecciones pueden cargarse de la siguiente manera:
+
+```{r}
+#| label: load_gsc
+#| eval: false
+
+# GO
+load("gscCe.rda")
+
+# KEGG
+load("gscKEGG_Celegans.rda")
+```
 
 ## Análisis mediante la colección de la Gene Ontology
 
@@ -836,11 +852,13 @@ gscCe<-gscCe[-elim]
 
 ### ¿Qué colecciones están involucradas en la respuesta a la hipoxia?
 
-En primer lugar se parte de los genes estadísticamente significativos para la hipoxia (FDR=0.05) y tal como se ha comentado anteriormente, se analizarán tanto sobreexpresados como con una expresión inferior a una situación de normoxia:
+En primer lugar se parte de los genes estadísticamente significativos para la hipoxia (FDR=0.05) y tal como se ha comentado anteriormente, se analizarán tanto sobreexpresados como con una expresión inferior a una situación de normoxia: Se realiza a continuación un análisis basado en el test de Fisher, para evaluar qué colecciones de genes (con genes "infraexpresados") están sobrerepresentadas:
 
+:::{.panel-tabset}
+### Up-regulados
 ```{r}
 #| label: ora_go_hyp_up
-#| output: false
+#| warning: false
 
 library(tami)
 
@@ -848,23 +866,36 @@ up_selected_genes1<-which(tt_annotated_glm_hyp$FDR<0.05 &
                             tt_annotated_glm_hyp$logFC>0)
 up_entrez_selected<-as.character(tt_annotated_glm_hyp[up_selected_genes1,"ENTREZID"])
 ora_hyp_glm_go_up<-ora(up_entrez_selected, gsc=gscCe)
-```
-
-Usando la función mostrada anteriormente, se pueden mostras aquellos grupos que resulten significativos, así como un enlace a la base de datos GeneOntology, donde se puede obtener más información. La descarga de estos datos se podría realizar mediante la misma función mostrada en el análisis diferencial de genes:
-
-```{r}
-#| label: html_ora_1
-#| warning: false
-# echo:false
-# Este código no se mostraría, dejando únicamente la salida
 
 informe_ora_hyp_up<-generate_ora_report(ora_hyp_glm_go_up, title = "Análisis de sobrerepresentación de grupos en hipoxia para genes sobrerepresentados respecto al control", threshold=0.05, analysis_type = "GO")
 
 informe_ora_hyp_up
 ```
+### Down-regulados
+```{r}
+#| label: ora_go_hyp_down
+#| warning: false
 
-Se representarán a continuación los grupos de genes, ordenados por su significancia y sobrerepresentación de acuerdo a su *odds ratio*, mediante un gráfico de burbujas:
+library(tami)
 
+down_selected_genes1<-which(tt_annotated_glm_hyp$FDR<0.05 &
+                            tt_annotated_glm_hyp$logFC<0)
+down_entrez_selected<-as.character(tt_annotated_glm_hyp[
+  down_selected_genes1,"ENTREZID"])
+ora_hyp_glm_go_down<-ora(down_entrez_selected, gsc=gscCe)
+
+informe_ora_hyp_d<-generate_ora_report(ora_hyp_glm_go_down, title = "Análisis de sobrerepresentación de grupos en hipoxia (con genes con menor expresión respecto al control)", threshold=0.05, analysis_type = "GO")
+
+informe_ora_hyp_d
+```
+:::
+
+Usando la función mostrada anteriormente, se pueden mostras aquellos grupos que resulten significativos, así como un enlace a la base de datos GeneOntology, donde se puede obtener más información. La descarga de estos datos se podría realizar mediante la misma función mostrada en el análisis diferencial de genes.
+
+Se representarán a continuación los grupos de genes, ordenados por su significancia y sobrerepresentación de acuerdo a su *odds ratio*, mediante sendos gráficos de burbujas, según su expresión:
+
+:::{.panel-tabset}
+### Up-regulados
 ```{r}
 #| label: plot_go_hyp_up
 #| warning: false
@@ -892,7 +923,7 @@ p <- ggplot(top_terms, aes(x = logP, y = reorder(name_short, logP))) +
   geom_point(aes(size = OR, color = OR, text = tooltip_text)) +
   scale_color_gradient(low = "skyblue", high = "darkred") +
   labs(
-    title = "Top 15 grupos de genes GO sobre-representados en condición de hipoxia",
+    title = "Top grupos de genes GO sobre-representados en condición de hipoxia",
     x = "-log10(p-valor)",
     y = "Grupo de genes",
     size = "Odds Ratio",
@@ -908,39 +939,7 @@ p <- ggplot(top_terms, aes(x = logP, y = reorder(name_short, logP))) +
 
 ggplotly(p, tooltip = "text")
 ```
-
-Se puede observar que muchos de los conjuntos de genes están relacionadas con la defensa frente a metales pesados y frente a cambios en el equilibruo redox. Es posible que exista una relación con rutas que garantizan el equilibrio redox o de estrés oxidativo, que pueden verse desregulados por el estrés provocado por la hipoxia. También se observa por ejemplo, un aumento del metabolismo de algunos aminoácidos, usados en posibles rutas metabólicas anaeróbicas, para superar este tipo de estrés ambiental. Estas rutas se activarán para mantener la viabilidad celular, tras una disminución de las rutas metabólicas convencionales, que seguramente bajen su expresión al ser dependientes de oxígeno.
-
-Se realiza a continuación un análisis basado en el test de Fisher, para evaluar qué colecciones de genes (con genes "infraexpresados") están sobrerepresentadas:
-
-```{r}
-#| label: ora_go_hyp_down
-#| output: false
-
-library(tami)
-
-down_selected_genes1<-which(tt_annotated_glm_hyp$FDR<0.05 &
-                            tt_annotated_glm_hyp$logFC<0)
-down_entrez_selected<-as.character(tt_annotated_glm_hyp[
-  down_selected_genes1,"ENTREZID"])
-ora_hyp_glm_go_down<-ora(down_entrez_selected, gsc=gscCe)
-```
-
-Usando la función mostrada anteriormente, se pueden mostras aquellos grupos que resulten significativos, así como un enlace a la base de datos GeneOntology, donde se puede obtener más información. La descarga de estos datos se podría realizar mediante la misma función mostrada en el análisis diferencial de genes:
-
-```{r}
-#| label: html_ora_1_down
-#| warning: false
-# echo:false
-# Este código no se mostraría, dejando únicamente la salida
-
-informe_ora_hyp_d<-generate_ora_report(ora_hyp_glm_go_down, title = "Análisis de sobrerepresentación de grupos en hipoxia (con genes con menor expresión respecto al control)", threshold=0.05, analysis_type = "GO")
-
-informe_ora_hyp_d
-```
-
-Si se representan los grupos de genes de acuerdo a los criterios establecidos anteriormente:
-
+### Down-regulados
 ```{r}
 #| label: plot_go_hyp_d
 #| warning: false
@@ -968,7 +967,7 @@ p <- ggplot(top_terms, aes(x = logP, y = reorder(name_short, logP))) +
   geom_point(aes(size = OR, color = OR, text = tooltip_text)) +
   scale_color_gradient(low = "skyblue", high = "darkred") +
   labs(
-    title = "Top 15 grupos de genes GO sobre-representados en condición de hipoxia",
+    title = "Top grupos de genes GO sobre-representados en condición de hipoxia",
     x = "-log10(p-valor)",
     y = "Grupo de genes",
     size = "Odds Ratio",
@@ -984,8 +983,10 @@ p <- ggplot(top_terms, aes(x = logP, y = reorder(name_short, logP))) +
 
 ggplotly(p, tooltip = "text")
 ```
+:::
 
-Con todo esto, se puede observar confirmar que en hipoxia, hay una expresión menor en grupos de genes relacionados con el metabolismo de ácidos grasos. Esto podría ocurrir ya que,aunque es un metabolismo muy energético, tiene mucha dependencia de oxígeno, que se verá muy disminuido en esta condición.
+Con todo esto, se puede observar que muchos de los conjuntos de genes sobreexpresados y con sobrerepresentación, están relacionadas con la defensa frente a metales pesados y frente a cambios en el equilibruo redox. Es posible que exista una relación con rutas que garantizan el equilibrio redox o de estrés oxidativo, que pueden verse desregulados por el estrés provocado por la hipoxia. También se observa por ejemplo, un aumento del metabolismo de algunos aminoácidos, usados en posibles rutas metabólicas anaeróbicas, para superar este tipo de estrés ambiental. Estas rutas se activarán para mantener la viabilidad celular, tras una disminución de las rutas metabólicas convencionales, que seguramente bajen su expresión al ser dependientes de oxígeno.
+Por otro lado, podría confirmarse que en hipoxia, hay una expresión menor en grupos de genes relacionados con el metabolismo de ácidos grasos. Esto podría ocurrir ya que,aunque es un metabolismo muy energético, tiene mucha dependencia de oxígeno, que se verá muy disminuido en esta condición.
 
 ### ¿Qué actividades se encuentran sobrerepresentadas en los organismos mutantes?
 
@@ -1179,7 +1180,7 @@ Tal y como se ha visto a lo largo de los reports, ninguna de las colecciones de 
 
 # Análisis de grupos de genes
 
-Finalmente, con las colecciones que se han creado y el Summarized Experiment, se realizará un análisis de grupos de genes, usando la función `GenSetTest`, incluída en el paquete `tami`. En todos los casos se evaluará tanto la hipótesis nula auto-contenida (los grupos analizados no tienen genes significativos asociados con su fenotipo), como la nula competitiva (los genes del grupo siguen el mismo patrón que el fenotipo, comparado con el resto de genes). Como este paquete usa un test *edgeR* clásico, no se podrá evaluar la interacción entre ambas variables estudiadas antes (*group* y *mutant*).
+Finalmente, con las colecciones que se han creado y el Summarized Experiment, se realizará un análisis de grupos de genes, usando la función `GenSetTest`, incluída en el paquete `tami` @Ayala2025. En todos los casos se evaluará tanto la hipótesis nula auto-contenida (los grupos analizados no tienen genes significativos asociados con su fenotipo), como la nula competitiva (los genes del grupo siguen el mismo patrón que el fenotipo, comparado con el resto de genes). Como este paquete usa un test *edgeR* clásico, no se podrá evaluar la interacción entre ambas variables estudiadas antes (*group* y *mutant*).
 
 ## Función de reporte para el Gene Set Analysis
 
@@ -1284,11 +1285,15 @@ generate_gsa_report <- function(df,
 Realizaremos primero el análisis con la colección de genes creada a partir de la *Gene Ontology*.
 
 ### ¿Qué colecciones están involucradas en la respuesta a la hipoxia?
-Se evaluan ambas hipótesis para la variable *dummy* *group*, es decir, para ver diferencias entre la condición de hipoxia o "normoxia". Para la hipótesis auto-contenida:
+Se evaluan ambas hipótesis para la variable *dummy* *group*, es decir, para ver diferencias entre la condición de hipoxia o "normoxia".  Veámos cuáles son estas colecciones con una significancia estadística:
 
+:::{.panel-tabset}
+### Hipótesis auto-contenida
 ```{r}
 #| label: gst_self_group_go
 #| eval: false
+
+# No se ejecuta al tardar mucho tiempo. En GitHub está disponible el resultado 
 eset<-PRJNA701955_SE
 
 PRJNA701955_self_group <- GeneSetTest(
@@ -1302,12 +1307,12 @@ PRJNA701955_self_group <- GeneSetTest(
                               nmax = 1000,
                               id = "ENTREZID",descriptive=mean)
 ```
-
 ```{r}
 #| label: gst_go_1
 #| eval: true
+#| warning: false
 
-load("PRJNA701955_self_group.rda")
+load("./GST/PRJNA701955_self_group.rda")
 print("Número de grupos de genes estadísticamente significativos para la hipótesis auto-contenida en hipoxia, usando la base de datos GO:")
 
 self_group_go <- cbind(as.data.frame(
@@ -1315,23 +1320,12 @@ self_group_go <- cbind(as.data.frame(
   as.data.frame(PRJNA701955_self_group@GeneSetStat))
 
 sum(self_group_go$adjp<.05)
-```
-Veamos cuáles son estas colecciones con una significancia estadística:
-
-```{r}
-#| label: html_self_hyp_go
-#| warning: false
-# echo:false
-# Este código no se mostraría, dejando únicamente la salida
 
 informe__self_go_hyp<-generate_gsa_report(self_group_go, title = "Análisis de grupos de genes GO en condición de hipoxia", threshold=0.05, analysis_type = "GO", pathways = pathways)
 
 informe__self_go_hyp
 ```
-Puede observarse que hay muchos grupos de genes que contienen genes estadísticamente significativos. Para obtener más información sobre esta expresión diferencial por grupos, se evaluará la hipótesis competitiva, para comprobar su asociación al fenotipo.
-
-Y para la hipótesis competitiva:
-
+### Hipótesis competitiva
 ```{r}
 #| label: gst_comp_group_go
 #| eval: true
@@ -1346,26 +1340,29 @@ PRJNA701955_comp_group <- GeneSetTest(
                                       alternative="less",
                                 nmax = 1000,
                                 id = "ENTREZID",descriptive=mean)
-```
 
-```{r}
-#| label: gst_go_2
-#| eval: true
 
 print("Número de grupos de genes estadísticamente significativos para la hipótesis competitiva en hipoxia, usando la base de datos GO:")
 GSA_go_hyp<-PRJNA701955_comp_group@GeneSetStat
 signif<-length(which(GSA_go_hyp$adjp<0.05))
 signif
 ```
-Así, se confirmaría mediante este análisis que no hay grupos de genes con diferente patrón que el fenotipo, en la condición de hipoxia respecto a un 21 % de oxígeno, aunque muchos grupos sí presentan genes significativos en hipoxia, tanto sobreexpresados, como con una expresión disminuida.
+:::
+Puede observarse que hay muchos grupos de genes que contienen genes estadísticamente significativos. Para obtener más información sobre esta expresión diferencial por grupos, se evaluará la hipótesis competitiva, para comprobar su asociación al fenotipo.
+
+Para la hipótesis competitiva, se confirmaría mediante este análisis que no hay grupos de genes con diferente patrón que el fenotipo, en la condición de hipoxia respecto a un 21 % de oxígeno, aunque muchos grupos sí presentan genes significativos en hipoxia, tanto sobreexpresados, como con una expresión disminuida.
 
 ### ¿Qué actividades se encuentran sobrerepresentadas en los organismos mutantes?
 
-Por otro lado, para la variable *dummy* *mutant*, donde evaluaremos la cepa *wild-type* N2 con los *knock-out* para genes relacionados con hipoxia. Para la hipotesis auto-contenida:
+Por otro lado, para la variable *dummy* *mutant*, donde evaluaremos la cepa *wild-type* N2 con los *knock-out* para genes relacionados con hipoxia. Veamos qué grupos de genes son:
 
+:::{.panel-tabset}
+### Hipótesis auto-contenida
 ```{r}
 #| label: gst_self_mutant_go
 #| eval: false
+
+# No se ejecuta al tardar mucho tiempo. En GitHub está disponible el resultado 
 
 PRJNA701955_self_mut <- GeneSetTest(x = eset ,y="mutant",gsc=gscCe,
                                       test = edgercommon,
@@ -1377,34 +1374,21 @@ PRJNA701955_self_mut <- GeneSetTest(x = eset ,y="mutant",gsc=gscCe,
                               nmax = 1000,
                               id = "ENTREZID",descriptive=mean)
 ```
-
 ```{r}
 #| label: gst_go_3
 #| eval: true
 
-load("PRJNA701955_self_mut.rda")
+load("./GST/PRJNA701955_self_mut.rda")
 print("Número de grupos de genes estadísticamente significativos para la hipótesis auto-contenida en mutantes para genes relacionados con hipoxia, usando la base de datos GO:")
 self_mut_go<-data.frame(PRJNA701955_self_mut@GeneSetData,
                         PRJNA701955_self_mut@GeneSetStat)
 sum(self_mut_go$adjp<.05)
-```
-Veamos qué grupos de genes son:
-
-```{r}
-#| label: html_self_mut_go
-#| warning: false
-# echo:false
-# Este código no se mostraría, dejando únicamente la salida
 
 informe__self_go_mut<-generate_gsa_report(self_mut_go, title = "Análisis de grupos de genes GO en mutantes para genes relacionados con hipoxia", threshold=0.05, analysis_type = "GO", pathways = pathways)
 
 informe__self_go_mut
 ```
-
-En este caso, la mayoría de grupos de genes que tienen genes estadísticamente significativos, rechazando así la hipótesis auto-contenida, están relacionados con procesos que involucran a distintos tipos de ARN, además de los neuroblastos.
-
-Evaluemos la hipótesis competitiva para comprobar si están asociados al fenotipo, o presentan distinto patrón a este:
-
+### Hipótesis competitiva
 ```{r}
 #| label: gst_comp_mutant_go
 #| eval: true
@@ -1419,32 +1403,21 @@ PRJNA701955_comp_mut <- GeneSetTest(
                                 alternative="less",nmax = 1000,
                                       id = "ENTREZID",
                                 descriptive=mean)
-```
-
-```{r}
-#| label: gst_go_4
-#| eval: true
 
 print("Número de grupos de genes estadísticamente significativos para la hipótesis competitiva para mutantes, respecto a organismos wild type, usando la base de datos GO:")
 comp_mut_go<-data.frame(PRJNA701955_comp_mut@GeneSetData,
                         PRJNA701955_comp_mut@GeneSetStat)
 sum(comp_mut_go$adjp<.05)
-```
-
-En este caso, el grupo de genes estadísticamente significativo que rechaza la hipótesis competitiva y que por tanto, sigue un patrón distinto del fenotipo es el siguiente:
-
-```{r}
-#| label: html_comp_mut_go
-#| warning: false
-# echo:false
-# Este código no se mostraría, dejando únicamente la salida
 
 informe_comp_go_mut<-generate_gsa_report(comp_mut_go, title = "Análisis de grupos de genes GO en mutantes para genes relacionados con hipoxia (hipótesis competitiva)", threshold=0.05, analysis_type = "GO", pathways = pathways)
 
 informe_comp_go_mut
 ```
+:::
 
-En este caso, la actividad fosfolipasa no tendría asociación con el fenotipo, aunque este grupo de genes no contenia genes significativos, de acuerdo al análisis de la hipótesis nula auto-contenida.
+En este caso, la mayoría de grupos de genes que tienen genes estadísticamente significativos, rechazando así la hipótesis auto-contenida, están relacionados con procesos que involucran a distintos tipos de ARN, además de los neuroblastos.
+
+Si evaluamos la hipótesis competitiva para comprobar si están asociados al fenotipo, o presentan distinto patrón a este el grupo de genes estadísticamente significativo que rechaza la hipótesis competitiva y que por tanto, sigue un patrón distinto del fenotipo es la actividad fosfolipasa. No obstante, este grupo de genes no contenia genes significativos, de acuerdo al análisis de la hipótesis nula auto-contenida.
 
 ## Análisis con la colección KEGG
 
@@ -1452,10 +1425,13 @@ En este caso, la actividad fosfolipasa no tendría asociación con el fenotipo, 
 
 Si repetimos el proceso, pero evaluando el *Summarized Experiment* mediante la colección de genes creada a partir de *KEGG*. Si en primer lugar evaluamos la variable *Group*, para la hipótesis auto-contenida:
 
+:::{.panel-tabset}
+### Hipótesis auto-contenida
 ```{r}
 #| label: gst_self_group_kegg
 #| eval: false
 
+# No se ejecuta al tardar mucho tiempo. En GitHub está disponible el resultado 
 PRJNA701955_self_group_k <- GeneSetTest(x = eset ,y="Group",gsc=gscKEGG,
                                       test = edgercommon,
                                       association="pvalue",
@@ -1466,12 +1442,11 @@ PRJNA701955_self_group_k <- GeneSetTest(x = eset ,y="Group",gsc=gscKEGG,
                               nmax = 1000,
                               id = "ENTREZID",descriptive=mean)
 ```
-
 ```{r}
 #| label: gst_kegg_1
 #| eval: true
 
-load("PRJNA701955_self_group_k.rda")
+load("./GST/PRJNA701955_self_group_k.rda")
 print("Número de grupos de genes estadísticamente significativos para la hipótesis auto-contenida en hipoxia, usando la base de datos KEGG:")
 self_hyp_k<-data.frame(PRJNA701955_self_group_k@GeneSetData,
                         PRJNA701955_self_group_k@GeneSetStat)
@@ -1482,23 +1457,13 @@ self_hyp_k$KEGG <- ifelse(grepl("^cel", self_hyp_k$KEGG),
                           paste0("cel", self_hyp_k$KEGG))
 
 sum(self_hyp_k$adjp<.05)
-```
 
-```{r}
-#| label: html_self_hyp_k
-#| warning: false
-# echo:false
-# Este código no se mostraría, dejando únicamente la salida
 
 informe_comp_k_hyp<-generate_gsa_report(self_hyp_k, title = "Análisis de grupos de genes KEGG en mutantes para genes relacionados con hipoxia (hipótesis auto-contenida)", threshold=0.05, analysis_type = "KEGG", pathways = pathways)
 
 informe_comp_k_hyp
 ```
-En este caso, al evaluar grupos de genes de la colección KEGG, para la hipótesis autocontenida en condiciones de hipoxia, se observa que hay genes significativos que codifican para vías del metabolismo de ácidos grasos, aminoácidos y otras moléculas que regulan el metabolismo redox como el glutatión.
-Estas vías podrían estar aumentadas en condiciones de hipoxia, para mantener el equilibrio redox, o para suplir mediante vías anaeróbicas, las necesidades energéticas para mantener la viabilidad celular.
-
-Y si se evalúa la hipótesis competitiva:
-
+### Hipótesis competitiva
 ```{r}
 #| label: gst_comp_hyp_kegg
 #| eval: true
@@ -1513,27 +1478,29 @@ PRJNA701955_comp_hyp_k <- GeneSetTest(
                                 alternative="less",nmax = 1000,
                                       id = "ENTREZID",
                                 descriptive=mean)
-```
 
-```{r}
-#| label: gst_kegg_2
-#| eval: true
 
 print("Número de grupos de genes estadísticamente significativos para la hipótesis competitiva en condición de hipoxia, usando la base de datos KEGG:")
 GSA_kegg_hyp<-PRJNA701955_comp_hyp_k@GeneSetStat
 signif<-length(which(GSA_kegg_hyp$adjp<0.1))
 signif
 ```
-No se observa ninguna diferencia con el fenotipo en ninguno de los grupos de genes en el caso de los nemátodos sometidos a hipoxia.
+:::
+En este caso, al evaluar grupos de genes de la colección KEGG, para la hipótesis autocontenida en condiciones de hipoxia, se observa que hay genes significativos que codifican para vías del metabolismo de ácidos grasos, aminoácidos y otras moléculas que regulan el metabolismo redox como el glutatión.
+Estas vías podrían estar aumentadas en condiciones de hipoxia, para mantener el equilibrio redox, o para suplir mediante vías anaeróbicas, las necesidades energéticas para mantener la viabilidad celular.
+
+Al evaluar la hipótesis competitiva, no se observa ninguna diferencia con el fenotipo en ninguno de los grupos de genes en el caso de los nemátodos sometidos a hipoxia.
 
 ### ¿Qué actividades se encuentran sobrerepresentadas en los organismos mutantes?
 
-Finalmente, si se evalúa para la variable *mutant*, con la hipótesis auto-contenida:
+Finalmente, si se evalúa para la variable *mutant*, con la hipótesis auto-contenida y competitiva:
 
+:::{.panel-tabset}
+### Hipótesis autocontenida
 ```{r}
-#| label: gst_self_mut_kegg
+#| label: gst_self_mut_kegg1
 #| eval: false
-
+# No se ejecuta al tardar mucho tiempo. En GitHub está disponible el resultado 
 PRJNA701955_self_mut_k <- GeneSetTest(x = eset ,y="mutant",gsc=gscKEGG,
                                       test = edgercommon,
                                       association="pvalue",
@@ -1544,21 +1511,16 @@ PRJNA701955_self_mut_k <- GeneSetTest(x = eset ,y="mutant",gsc=gscKEGG,
                               nmax = 1000,
                               id = "ENTREZID",descriptive=mean)
 ```
-
 ```{r}
-#| label: gst_kegg_3
+#| label: gst_self_mut_kegg2
 #| eval: true
-
-load("PRJNA701955_self_mut_k.rda")
+load("./GST/PRJNA701955_self_mut_k.rda")
 print("Número de grupos de genes estadísticamente significativos para la hipótesis auto-contenida en mutantes para genes relacionados con hipoxia, usando la base de datos KEGG:")
 GSA_k_mut_s<-PRJNA701955_self_mut_k@GeneSetStat
 signif<-length(which(GSA_k_mut_s$adjp<0.05))
 signif
 ```
-No se observa que ningún grupo de genes (vías metabolicas de la colección KEGG) contenga genes estadísticamente significativos en este caso.
-
-Y evaluando la hipótesis competitiva:
-
+### Hipótesis competitiva
 ```{r}
 #| label: gst_comp_mutant_kegg
 #| eval: true
@@ -1573,18 +1535,22 @@ PRJNA701955_comp_mutant_k <- GeneSetTest(
                                 alternative="less",nmax = 1000,
                                       id = "ENTREZID",
                                 descriptive=mean)
-```
 
-```{r}
-#| label: gst_kegg_4
-#| eval: true
 
 print("Número de grupos de genes estadísticamente significativos para la hipótesis competitiva para mutantes, respecto a organismos wild type, usando la base de datos KEGG:")
 GSA_kegg_mut<-PRJNA701955_comp_mutant_k@GeneSetStat
 signif<-length(which(GSA_kegg_mut$adjp<.05))
 signif
 ```
+:::
+
 Tal y como era esperable tras todos los resultados obtenidos usando la colección creada a partir de la base de datos KEGG, no hay significancia estadística suficiente para afirmar que hay una ruta metabólica diferentemente expresada en los *knock-out* respecto los nemátodos *wild-type*. En ningún caso se ha podido descartar la hipótesis nula ni para la hipótesis auto-contenida ni para la competitiva. Es decir, los grupos analizados no tienen genes significativos asociados con su fenotipo, y siguen el mismo patrón que el fenotipo, comparado con el resto de genes para ambas condiciones.
+
+# Comparación con estudios publicados
+
+Este dataset se ha usado en un estudio, haciendo hincapié en la diferente expresión según el tipo de mutante y su afección a la hipoxia (@Doering2022).
+No obstante, cabe resaltar que mencionan también la importancia del metabolismo de aminoácidos, que también se ha encontrado en ciertas partes de este análisis sobrepresentado y concluye que la deficiencia de estos genes, tanto por separado como juntos, activan nuevas vías que pueden mantener la viabilidad celular en condiciones de hipoxia.
+Además, da mucha importancia a la homología de *nhr* con *PPARα*, lo que podría llegar a justificar que el metabolismo de ácidos grasos pueda cambiar su función según si es mutante ppara este gen o no.
 
 # Conclusión
 
