@@ -1,0 +1,2054 @@
+---
+title: "Tarea 1: Análisis de un microarray"
+subtitle: "Bioinformática estadística"
+author:
+  - name: "Adrià Martínez García"
+    affiliation: "Universitat de València"
+    email: "adria2@alumni.uv.es"
+date: "`r Sys.Date()`"
+bibliography: "ma.bib"
+csl: vancouver.csl
+format: 
+    html:
+      embed-resources: true
+      toc: true
+      toc-depth: 3
+      number-sections: true
+      theme: cerulean
+      code-fold: true
+      code-tools: false
+      code-links:
+      - text: Download Quarto
+        icon: file-code
+        href: https://github.com/adriamartinezg/Estadistica
+css: styles.css
+---
+
+# Elección del experimento
+
+Una vez realizada una búsqueda en la base de datos Gene Expression Omnibus(GEO), se ha escogido la serie [GSE37305](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE37305), que corresponde a un experimento con el nemátodo *Caenorhabditis elegans*, en distintas condiciones de dieta (dieta *ad libitum* o ayunados), para ambos sexos conocidos (machos y hermafroditas). Este estudio escogido se conforma de 12 microarrays de oligonucleótidos *in situ*, organizados en 4 grupos, con 3 réplicas biológicas por grupo. Fue publicado en GEO en diciembre de 2017, aunque su última actualización es del 30 de marzo de 2024.
+
+# Obtención de las muestras
+
+En este caso, los datos se han descargado puros de la plataforma *GEO*, con el código *GSE37305*. En primer lugar, hay que hacer accesibles los datos, es decir, descomprimirlos:
+
+```{r}
+#| label: descomprimir
+#| eval: false
+#| warning: false
+#| output: false
+
+# Si el archivo ya existe, el código dará error, por eso, por defecto no habrá evaluación
+
+data <- "./raw_data"
+setwd(data)
+
+system("tar xvf GSE37305_RAW.tar")
+
+library(R.utils)
+
+for (file in list.files(pattern = "\\.CEL\\.gz$")) {
+  R.utils::gunzip(file, remove = FALSE)  }
+```
+
+Aunque el chip usado en este experimento es de la marca comercial Affymetrix, el tipo usado (*Gene 1.1 ST Array*) debe ser analizado con el paquete `Oligo` en lugar de el paquete `Affy`. Así, una vez se han descomprimido los archivos `CEL`, se leerán para crear el archivo rda correspondiente:
+
+```{r}
+#| label: cel
+#| eval: false
+#| warning: false
+library(oligo)
+library(Biobase)
+library(dplyr)
+
+cel_files <- list.celfiles(full.names = TRUE)
+gse37305raw <- read.celfiles(cel_files)
+save(gse37305raw, file = "gse37305raw.rda")
+```
+
+# Preprocesado y normalización de las muestras
+
+```{r}
+#| label: open_raw
+#| warning: false
+library(oligo)
+library(Biobase)
+library(dplyr)
+load("gse37305raw.rda")
+```
+
+## Control de calidad de las muestras
+
+Antes de empezar el análisis estadístico diferencial de las diferentes muestras obtenidas a través del repositorio público, deben preprocesarse y hacer un análisis de la calidad y la variabilidad de las muestras intrarray.
+
+Por eso se realizarán, antes de normalizar los datos, los gráficos de media-diferencia de Tukey, un histograma de densidad y un diagrama de cajas para ver la distribución de estos datos.
+
+El gráfico de media-diferencia de Tukey, también llamado MA Plot por su nombre en inglés, muestran los valores (como logaritmo en base 2) de la media y la diferencia de valores en los arrays, y sirve para descartar alguno de ellos que no se ha realizado correctamente o bien para indicar que los datos necesitan ser homogeneizados.
+
+```{r}
+#| label: setwd
+#| eval: false
+
+# Añadir aquí el directorio de la carpeta
+
+setwd("./")
+```
+
+::: panel-tabset
+### Efecto del sexo
+
+```{r}
+#| label: ma-sexo
+#| fig-cap: "MA Plot: Sexo (Hembras vs Machos)"
+
+# Definir condiciones (3 réplicas, 4 grupos)
+condicion <- c(
+  rep("Hermaphrodite_Fed", 3),
+  rep("Hermaphrodite_Fasting", 3),
+  rep("Male_Fed", 3),
+  rep("Male_Fasting", 3)
+)
+
+herma_samples <- grepl("Hermaphrodite", condicion)
+male_samples <- grepl("Male", condicion)
+
+MAplot(gse37305raw,
+       groups = factor(ifelse(herma_samples, "Hermaphrodite", "Male")),
+       pairs = TRUE,
+       main = "MA Plot: Sexo (Hembras vs Machos)",
+       cex = 0.6)
+```
+
+### Efecto de la dieta
+
+```{r}
+#| label: ma-dieta
+#| fig-cap: "MA Plot: Dieta (Fed vs Fasting)"
+
+fed_samples <- grepl("Fed", condicion)
+fasting_samples <- grepl("Fasting", condicion)
+
+MAplot(gse37305raw,
+       groups = factor(ifelse(fed_samples, "Fed", "Fasting")),
+       pairs = TRUE,
+       main = "MA Plot: Dieta (Fed vs Fasting)",
+       cex = 0.6)
+```
+
+### Efecto para los hermafroditas
+
+```{r}
+#| label: ma-hembras
+#| fig-cap: "MA Plot: Hermafroditas (Fed vs Fasting)"
+
+MAplot(gse37305raw[, herma_samples],
+       groups = factor(ifelse(fed_samples[herma_samples], "Fed", "Fasting")),
+       pairs = TRUE,
+       main = "MA Plot: Hermafroditas (Fed vs Fasting)")
+```
+
+### Efecto para los machos
+
+```{r}
+#| label: ma-machos
+#| fig-cap: "MA Plot: Machos (Fed vs Fasting)"
+
+MAplot(gse37305raw[, male_samples],
+       groups = factor(ifelse(fed_samples[male_samples], "Fed", "Fasting")),
+       pairs = TRUE,
+       main = "MA: Machos (Fed vs Fasting)")
+```
+:::
+
+También se pueden realizar diagramas de densidad para ver si las muestras son homogéneas, según se distribuyan los datos de expresión de cada una de las muestras.
+
+En este caso se podría usar la función `multidensity` del paquete `geneplotter` para obtener el gráfico, que representaría las densidades de las diferentes muestras que a partir del archivo de datos crudos se habrán transformado en un dataframe. No obstante en este caso se calcularán manuelamente estas densidades y se representarán para un mejor control de la leyenda del plot. También se muestran estos mismos datos mediante un diagrama de cajas, usando el método `boxplot` del paquete `graphics`:
+
+::: {.panel-tabset}
+### Gráfico de densidad
+
+```{r}
+#| label: pre-rma
+# Obtener las intensidades por muestra
+list_intensidades <- as.list(as.data.frame(exprs(gse37305raw)))
+n <- length(list_intensidades)
+colors <- rainbow(n)
+
+# Calcular densidades manualmente para poner leyenda personalizada
+densidades <- lapply(list_intensidades, density)
+
+plot(densidades[[1]], type = "l", col = colors[1],
+     xlim = c(0, 500), ylim = c(0, max(sapply(densidades, function(d) max(d$y)))),
+     main = "Comparación de las densidades de las muestras sin normalizar",
+     xlab = "Intensidad", ylab = "Densidad")
+
+for (i in 2:n) {
+  lines(densidades[[i]], col = colors[i])
+}
+
+# Leyenda personalizada
+legend("topright", legend = colnames(exprs(gse37305raw)), col = colors, lty = 1, cex = 0.4)
+```
+
+### Boxplot
+
+```{r}
+#| label: pre-rma2
+intensidades<-exprs(gse37305raw)
+graphics::boxplot(intensidades, main = "Diagrama de cajas de los arrays", 
+                  xlab = "Muestra", ylab ="Intensidad", col = 
+                    rainbow(ncol(intensidades)), outline = FALSE,
+                  las= 3, cex.axis=0.2)
+```
+:::
+
+Una vez vista la buena calidad de las muestras, con el objetivo de homogeneizarlas se usará el protocolo RMA (Robust Multiarray Average). propio de los chips de la marca comercial **Affymetrix**, como es este caso. El resultado lo guardamos en la variable con el nombre del experimento, pero indicando que son datos normalizados:
+
+```{r}
+#| label: rma-procedure
+#| warning: false
+gse37305_rma <- rma(gse37305raw)
+```
+
+Volvemos a comprobar si después de esta normalización, las muestras son más homogéneas con los dos gráficos mostrados anteriormente (diagrama de densidad y diagrama de cajas):
+
+::: {.panel-tabset}
+### Gráfico de densidad
+
+```{r}
+#| label: post-rma
+
+# Obtener las intensidades por muestra
+list_intensidades_rma <- as.list(as.data.frame(exprs(gse37305_rma)))
+n <- length(list_intensidades_rma)
+colors <- rainbow(n)
+
+# Calcular densidades manualmente para poner leyenda personalizada
+densidades <- lapply(list_intensidades_rma, density)
+
+plot(densidades[[1]], type = "l", col = colors[1],
+     xlim = c(0,20), ylim = c(0, max(sapply(densidades, function(d) max(d$y)))),
+     main = "Comparación de las densidades de las muestras normalizada",
+     xlab = "Intensidad", ylab = "Densidad")
+
+for (i in 2:n) {
+  lines(densidades[[i]], col = colors[i])
+}
+
+# Leyenda personalizada
+legend("topright", legend = colnames(exprs(gse37305_rma)), col = colors, lty = 1, cex = 0.4)
+```
+
+### Boxplot
+
+```{r}
+#| label: post-rma2
+
+intensidades_rma<-exprs(gse37305_rma)
+graphics::boxplot(intensidades_rma, main = "Diagrama de cajas de los arrays ya normalizados", 
+                  xlab = "Muestra", ylab ="Intensidad", col = 
+                    rainbow(ncol(intensidades_rma)), outline = FALSE,
+                  las= 3, cex.axis=0.2)
+
+```
+:::
+
+## Guardado de archivos
+
+Las representaciones anteriores podrán guardarse mediante la ejecución del siguiante `chunk`:
+
+```{r}
+#| label: plot_save
+#| eval: false
+guardar_grafico <- function(
+    expr_grafico, 
+    nombre_archivo, 
+    ancho = 8, 
+    alto = 6, 
+    res = 300) {
+  
+  archivo <- paste0(nombre_archivo, ".png")
+  
+  png(archivo, width = ancho, height = alto, units = "in", res = res)
+  eval(expr_grafico)
+  invisible(dev.off())
+
+}
+```
+
+Como parámetros necesita `expr_grafico`, donde se deberá insertar el código deseado para la visualización, el nombre del archivo, así como parámetros dimensionales.
+
+## Obtención del ExpressionSet
+
+Una vez hecho el pre-procesado mediante el procedimiento de RMA, ya se ha eliminado el ruido de fondo y se han normalizado las muestras. Seguidamente, se debe construir el objeto ExpressionSet con todos los datos disponibles. En un primer momento, podemos comprobar que estos metadatos se encuentran vacíos y deberán rellenarse con la máxima información posible.
+
+```{r}
+#| label: ExpressionSet-sin-metadatos
+
+experimentData(gse37305_rma)
+annotation(gse37305_rma)
+```
+
+### Datos fenotípicos y del experimento
+
+Estos datos se obtendrán de los contenidos en la base de datos GEO (concretamente de los datos que se encuentran procesados), de manera que se usarán los metadatos allí presentes con la matriz de expresión que se ha normalizado anteriormente. La obtención de los mismos y la construcción del objeto se muestran a continuación:
+
+```{r}
+#| label: ExpressionSet-building
+#| warning: false
+
+# Obtenemos el ExpressionSet
+gse <-  GEOquery::getGEO('GSE37305')
+
+# Cambiamos los nombres de las muestras
+new_names <- gsub("^(GSM[0-9]+)_.*", "\\1", colnames(exprs(gse37305_rma)))
+sampleNames(phenoData(gse37305_rma)) <- new_names
+sampleNames(protocolData(gse37305_rma)) <- new_names  
+colnames(exprs(gse37305_rma)) <- new_names
+
+library(dplyr)
+
+pdatas <- pData(gse[[1]]) %>%
+  dplyr::select(
+    title,
+    gender = "gender:ch1",
+    genetic_background = "genetic background:ch1",
+    genotype = "genotype:ch1",
+    tissue = "tissue:ch1",
+    treatment = "treatment:ch1"
+  )
+
+gse37305_filter <- ExpressionSet(assayData = exprs(gse37305_rma), 
+                           phenoData = AnnotatedDataFrame(pdatas),
+                           experimentData = experimentData(gse[[1]]))
+```
+
+### Obtención de las correspondencias de las sondas
+
+El último paso para tener el ExpressionSet completo, es asignar a cada sonda utilizada, su correspondencia con el gen, para realizar posteriormente los análisis pertinentes conociendo los lugares donde se pueda observar diferencias estadísticas (los nombres de las sondas no aportan información biológica sobre esto, ya que cada empresa los nombra de la manera que considera oportuna). También debemos revisar si hay correspondencias múltiples entre genes y sondas, y si es así, resolverlas. En primer lugar, miraremos el números de los ID de las sondas que se han usado en los datos de expresión ya analizados y el tipo de chip usado:
+
+```{r}
+#| label: ProbesNumber
+nrow(gse37305_filter)
+annotation(gse37305_filter)
+```
+
+Seguidamente, las compararemos con el número de sondas encontradas al compararlas con las del archivo de anotación y sus IDs de las bases de datos *EntrezID* y *ENSEMBL*. Para esto es necesario usar la base de datos del paquete `celegans.db`.
+
+```{r}
+#| label: Correspondencias
+
+probe_ids<-featureNames(gse37305_filter)
+
+# Cargamos (y si hace falta descargamos) el paquete de anotación
+pacman::p_load(celegans.db)
+keytypes(celegans.db)
+
+# Realizar la anotación
+a <- AnnotationDbi::select(celegans.db, 
+                           keys = probe_ids,  
+                           columns = c("ENTREZID", "ENSEMBL", "SYMBOL", "GENENAME", "GO", "WORMBASE"), 
+                           keytype = "PROBEID") 
+
+# Comprobar el número de sondas que aparecen
+dim(a)
+```
+
+Se puede observar que hay correspondencias múltiples ya que hay más observaciónes tras realizar la anotación de las que había inicialmente en los datos normalizados. Seguidamente, se procederá a resolver estas correspondencias múltiples:
+
+```{r}
+#| label: correspondencias_multiples
+#| warning: false
+
+# Ver sondas con corresponencias múltiples y aislarlas del resto
+b <- which(table(a[,1]) > 1)
+
+a_multi <- a[a$PROBEID %in% names(b), ]
+
+# De cada una de ellas, escoger una al azar
+library(dplyr)
+set.seed(123)  
+a_random <- a_multi %>%
+  group_by(PROBEID) %>%
+  sample_n(1)  
+
+# Unir a las que tenían correspondencia única
+a_unique <- a[!a$PROBEID %in% names(b), ]
+a_final <- bind_rows(a_unique, a_random)
+
+# Comprobar ahora que el número de filas sea igual
+nrow(gse37305_rma)
+nrow(a_final)
+
+# Crear el fData correcto para el ExpressionSet
+feature_data <- AnnotatedDataFrame(a_final)
+featureData(gse37305_filter) <- feature_data
+
+# Eliminar datos de expresión que tenían correspondencias múltiples y 
+# no se han escogido
+gse37305 <- gse37305_filter[featureNames(gse37305_filter) 
+                                    %in% a_final$PROBEID, ]
+nrow(gse37305)
+
+# Mostramos el resumen del ExpressionSet
+gse37305
+```
+
+Tal y como puede observarse ahora, el número de sondas que quedan después de solucionar las correspondencias múltiples es igual al número de sondas presentes en el ExpressionSet. Por lo tanto, una vez realizado todo el preprocesado, los datos han sido normalizados, se les ha eliminado el ruido y se han asociado a una información biológica y pueden pasar a ser analizados.
+
+El `ExpressionSet` obtenido se puede descargar mediante el siguiente código:
+
+```{r}
+#| label: expression_set
+#| eval: true
+
+save(gse37305, file="gse37305.rda")
+```
+
+# Análisis de expresión diferencial
+
+Los genes diferencialmente expresados en cada condición se obtendrán tanto mediante un análisis marginal (por filas, usando el test t de Student) @Gentleman2025, y también tras un análisis mediante el paquete `limma` @Smyth2025. En ambos casos se aplicará ajuste de los p-valores mediante el método *Benjamini-Hochberg* y de *Bonferroni*, y aplicando una FDR del 5 % en todos los casos. Tal y como se ha indicado en la introducción, el dataset evalúa tanto el sexo de los nemátodos como la condición de ayuno/alimentado. Por ello se estudiará como influyen ambas variables por separado, y también su interacción.
+
+## Función de reporte de genes estadísticamente significativos
+
+Para una visualización más eficaz de estos genes, se construirá una función que a partir de un `data.frame` con los genes, mostrará una tabla HTML con el gen, los datos y distintos enlaces a bases de datos, que permiten obtener más información sobre los mismos.
+
+```{r}
+#| label: funcion_tabla_html
+#| warning: false
+
+generate_gene_report <- function(df, fdr_column = "pBH", 
+                                title = "", fdr_threshold = 0.05,
+                                fc_column = "dm") {
+  require(dplyr)
+  require(DT)
+  require(tami)
+  require(htmltools)
+
+  report_df <- df %>%
+    dplyr::filter(.data[[fdr_column]] < fdr_threshold) %>%  
+    dplyr::arrange(.data[[fdr_column]]) %>%
+    dplyr::select(
+      Symbol = SYMBOL,
+      GeneName = GENENAME,
+      FC = .data[[fc_column]],  
+      PValue = P.Value,
+      FDR = .data[[fdr_column]],
+      ENTREZID,
+      ENSEMBL,
+      GO,
+      WORMBASE
+    ) %>%
+    dplyr::mutate(
+      Entrez_Link = ifelse(!is.na(ENTREZID) & ENTREZID != "", 
+                          tami::entrezid2url(ENTREZID), 
+                          NA_character_),
+      Ensembl_Link = ifelse(!is.na(ENSEMBL) & ENSEMBL != "", 
+                           tami::ensembl2url(ENSEMBL), 
+                           NA_character_),
+      GO_Link = ifelse(!is.na(GO) & GO != "", 
+                       tami::go2url(GO), 
+                       NA_character_),
+      WormBase_Link = ifelse(!is.na(WORMBASE) & WORMBASE != "", 
+                            tami::WormBase2url(WORMBASE), 
+                            NA_character_)
+    ) %>%
+    dplyr::select(-ENTREZID, -ENSEMBL, -GO, -WORMBASE)
+  
+  datatable_report <- DT::datatable(
+    report_df,
+    escape = FALSE,
+    extensions = c('Buttons', 'Scroller'),
+    options = list(
+      dom = 'Bfrtip',
+      buttons = c('copy', 'csv', 'excel', 'pdf'),
+      scrollX = TRUE,
+      pageLength = 10,
+      columnDefs = list(
+        list(
+          targets = which(grepl("_Link$", colnames(report_df))) - 1,
+          render = JS(
+            "
+            function(data, type, row) {
+              if (data === null || data === undefined || data === 'NA' || data === '') {
+                return '';
+              }
+              return data;
+            }
+          "),
+          className = 'dt-center'
+        )
+      ),
+      language = list(emptyTable = "No significant genes found")
+    ),
+    rownames = FALSE,
+    class = 'display nowrap',
+    caption = htmltools::tags$caption(
+      style = 'caption-side: top; text-align: center;', 
+      htmltools::h3(title)
+    )
+  )
+  
+  return(datatable_report)
+}
+```
+
+La función permite seleccionar el nivel de FDR, así como el nombre de la columna usada (En algunos casos puede ser `FDR` en lugar de `adj.P.Value` -no en el test de la t moderado que proporciona `limma`- y tener otros nombres en el análisis marginal), además del título. Asimismo, debe indicarse en `fc_column` si se usará la diferencia de medias o el estadístico t, segú en análisis realizado (`dm` o `t`).
+
+Esta tabla puede descargarse en formato HTML usando la siguiente función:
+
+```{r}
+#| label: descargar_report_html
+
+save_gene_report_html <- function(widget,
+                                  file = "gene_report.html",
+                                  title = "Análisis de expresión génica",
+                                  color = "white",
+                                  selfcontained = TRUE) {
+  requireNamespace("htmlwidgets", quietly = TRUE)
+  
+  htmlwidgets::saveWidget(
+    widget = widget,
+    file = file,
+    title = title,
+    background = background,
+    selfcontained = selfcontained
+  )
+}
+```
+
+Puede adaptarse tanto el título como el color de fondo de la tabla. Además, evita la aparición de advertencias y embebe todos los recursos en el HTML, evitando depender de carpetas externas.
+
+## Análisis de expresión diferencial marginal: test t de Student
+
+En primer lugar se buscará fila por fila cuáles son los genes diferencialmente expresados.
+
+```{r}
+#| label: rowttest
+
+load("gse37305.rda")
+
+muestras_seleccionadas <- which(
+  pData(gse37305)$gender %in% c("Hermaphrodite", "male") &
+    pData(gse37305)$treatment %in% c("fasted", "fed ad libitum")
+)
+
+sexo<-factor(pData(gse37305)$gender, levels=c("Hermaphrodite", "male"))
+tratamiento<-factor(pData(gse37305)$treatment, levels = c("fed ad libitum","fasted"))
+
+eset_filtrado <- gse37305[, muestras_seleccionadas]
+```
+
+### ¿Qué efecto tiene el sexo en *C. elegans*?
+
+```{r}
+#| label: marginal_sex
+
+tt2 <- genefilter::rowttests(eset_filtrado, sexo)
+tt2 <- tt2 %>% rename(P.Value = p.value)
+
+pval<-tt2[,"P.Value"]
+pBon<-p.adjust(pval,method = "bonferroni")
+pBH<-p.adjust(pval,method="BH")
+
+df2<-data.frame(fData(gse37305),tt2,pBon,pBH)
+```
+
+Una vez obtenido el `data.frame`, se muestran a continuación aquellos genes que han resultado significativos, aplicando la corrección de Benjamini-Holchberg o de Bonferroni, divididos según si se encuentran sobreexpresados o si los hermafroditas tienen una mayor expresión sobre los machos (infraexpresados):
+
+::: panel-tabset
+### Up-regulated BH
+
+```{r}
+#| label: t_up_sex_bh
+#| warning: false
+
+up_sex_bh <- df2[df2$dm < 0 & df2$pBH < 0.05,]
+nrow(up_sex_bh)
+generate_gene_report(up_sex_bh, fdr_column = "pBH", title = "Genes sobreexpresados en machos con corrección de BH", fc_column="dm", fdr_threshold = 0.05)
+```
+
+### Down-regulated BH
+
+```{r}
+#| label: t_down_sex_bh
+#| warning: false
+
+down_sex_bh <- df2[df2$dm > 0 & df2$pBH < 0.05,]
+nrow(down_sex_bh)
+generate_gene_report(down_sex_bh, fdr_column = "pBH", title = "Genes infraexpresados en machos con corrección de BH", fc_column="dm", fdr_threshold = 0.05)
+```
+
+### Up-regulated Bonferroni
+
+```{r}
+#| label: t_up_sex_bn
+#| warning: false
+
+up_sex_bn <- df2[df2$dm < 0 & df2$pBon < 0.05,]
+nrow(up_sex_bn)
+generate_gene_report(up_sex_bn, fdr_column = "pBon", title = "Genes sobreexpresados en machos con corrección de Bonferroni", fc_column="dm", fdr_threshold = 0.05)
+```
+
+### Down-regulated Bonferroni
+
+```{r}
+#| label: t_down_sex_bn
+#| warning: false
+
+down_sex_bh <- df2[df2$dm > 0 & df2$pBon < 0.05,]
+nrow(down_sex_bh)
+generate_gene_report(down_sex_bh, fdr_column = "pBon", title = "Genes infraexpresados en machos con corrección de Bonferroni", fc_column="dm", fdr_threshold = 0.05)
+```
+:::
+
+A continuación se representan de manera gráfica los genes expresados significativamente en esta condición, dividiendolos según si su expresión es mayor o menor en machos respecto nemátodos hermafroditas:
+
+::: panel-tabset
+### BenjaminiHochberg
+
+```{r}
+#| label: vulcano_t_sex_up
+#| warning: false
+library(ggplot2)
+library(plotly)
+
+sig_genes <- subset(df2, pBH < 0.05)
+sig_genes$Regulacion <- ifelse(sig_genes$dm < 0, "Up-regulated", "Down-regulated")
+table(sig_genes$Regulacion)
+
+plot_hyp<-ggplot(sig_genes, aes(x = dm, y = -log10(pBH), color = Regulacion)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("Up-regulated" = "red", "Down-regulated" = "blue")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Análisis del efecto del sexo en C.elegans",
+    x = "Log2 Fold Change",
+    y = "-Log10 FDR"
+  )
+
+ggplotly(plot_hyp, tooltip = "text")
+```
+
+### Bonferroni
+
+```{r}
+#| label: vulcano_t_sex_up_bn
+#| warning: false
+library(ggplot2)
+library(plotly)
+
+sig_genes <- subset(df2, pBon < 0.05)
+sig_genes$Regulacion <- ifelse(sig_genes$dm < 0, "Up-regulated", "Down-regulated")
+table(sig_genes$Regulacion)
+
+plot_hyp<-ggplot(sig_genes, aes(x = dm, y = -log10(pBon), color = Regulacion)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("Up-regulated" = "red", "Down-regulated" = "blue")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Análisis del efecto del sexo en C.elegans",
+    x = "Log2 Fold Change",
+    y = "-Log10 FDR"
+  )
+
+ggplotly(plot_hyp, tooltip = "text")
+```
+:::
+
+Tal y como era esperable al ser un test más estricto, con el ajuste mediante el método de Bonferroni se observan menos genes significativos. Vemos que según el sexo de los gusanos, unos genes estarán sobreexpresados y otros menos, por lo que los dos grupos serán importantes para realizar un análisis de colecciones de genes significativos.
+
+### ¿Influye el ayuno en la expresión génica?
+
+```{r}
+#| label: marginal_treatment
+
+tt <- genefilter::rowttests(eset_filtrado, tratamiento)
+tt <- tt %>% rename(P.Value = p.value)
+
+pval<-tt[,"P.Value"]
+pBon<-p.adjust(pval,method = "bonferroni")
+pBH<-p.adjust(pval,method="BH")
+
+df1<-data.frame(fData(gse37305),tt,pBon,pBH)
+```
+
+Una vez obtenido el `data.frame`, se muestran a continuación aquellos genes que han resultado significativos, aplicando la corrección de Benjamini-Holchberg o de Bonferroni, divididos según si se encuentran sobreexpresados en condiciones de ayuno o si su expresión es menor:
+
+::: panel-tabset
+### Up-regulated BH
+
+```{r}
+#| label: t_up_fast_bh
+#| warning: false
+
+up_fast_bh <- df1[df1$dm < 0 & df1$pBH < 0.05,]
+nrow(up_fast_bh)
+generate_gene_report(up_fast_bh, fdr_column = "pBH", title = "Genes sobreexpresados en ayuno con corrección de BH", fc_column="dm", fdr_threshold = 0.05)
+```
+
+### Down-regulated BH
+
+```{r}
+#| label: t_down_fast_bh
+#| warning: false
+
+down_fast_bh <- df1[df1$dm > 0 & df1$pBH< 0.05,]
+nrow(down_fast_bh)
+generate_gene_report(down_fast_bh, fdr_column = "pBH", title = "Genes infraexpresados en ayuno con corrección de BH", fc_column="dm", fdr_threshold = 0.05)
+```
+### Up-regulated Bonferroni
+```{r}
+#| label: t_up_fast_bn
+#| warning: false
+
+up_fast_bn <- df1[df1$dm < 0 & df1$pBon < 0.05,]
+nrow(up_fast_bn)
+generate_gene_report(up_fast_bn, fdr_column = "pBon", title = "Genes sobreexpresados en ayuno con corrección de Bonferroni", fc_column="dm", fdr_threshold = 0.05)
+```
+### Down-regulated Bonferroni
+```{r}
+#| label: t_down_fast_bn
+#| warning: false
+
+down_fast_bh <- df1[df1$dm > 0 & df1$pBon < 0.05,]
+nrow(down_fast_bh)
+generate_gene_report(down_fast_bh, fdr_column = "pBon", title = "Genes infraexpresados en ayuno con corrección de Bonferroni", fc_column="dm", fdr_threshold = 0.05)
+```
+:::
+
+Al representar estos genes significativos en un vulcano plot para una visualización más senzilla se observa lo siguiente:
+
+::: panel-tabset
+### Benjamini-Hochberg
+```{r}
+#| label: vulcano_t_tr_up
+#| warning: false
+library(ggplot2)
+library(plotly)
+
+sig_genes <- subset(df1, pBH < 0.05)
+sig_genes$Regulacion <- ifelse(sig_genes$dm < 0, "Up-regulated", "Down-regulated")
+table(sig_genes$Regulacion)
+
+plot_sex<-ggplot(sig_genes, aes(x = dm, y = -log10(pBH), color = Regulacion)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("Up-regulated" = "red", "Down-regulated" = "blue")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Análisis del efecto de la dieta en C.elegans",
+    x = "Log2 Fold Change",
+    y = "-Log10 FDR"
+  )
+
+ggplotly(plot_sex, tooltip = "text")
+```
+### Bonferroni
+```{r}
+#| label: vulcano_t_tr_up_bn
+#| warning: false
+library(ggplot2)
+library(plotly)
+
+sig_genes <- subset(df1, pBon < 0.05)
+sig_genes$Regulacion <- ifelse(sig_genes$dm < 0, "Up-regulated", "Down-regulated")
+table(sig_genes$Regulacion)
+
+plot_sex<-ggplot(sig_genes, aes(x = dm, y = -log10(pBon), color = Regulacion)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("Up-regulated" = "red", "Down-regulated" = "blue")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Análisis del efecto de la dieta en C.elegans",
+    x = "Log2 Fold Change",
+    y = "-Log10 FDR"
+  )
+
+ggplotly(plot_sex, tooltip = "text")
+```
+:::
+
+Puede observarse que en condiciones de ayuno hay muchos genes que tienen una expresión menor que en condiciones normales de alimentación. Estos genes codificarán para proteínas que necesiten mucha energía para realizar su función, o bien de algún tipo de metabolismo que, al estar en condiciones de ayuno podrán cambiar para mantener la viabilidad celular. Asimismo, el ayuno activará vías metabólicas no canónicas y rutas de señalización para producir energía y mantener la actividad celular en esta condición de estrés.
+
+## Test de la t moderado
+
+Se realizará el análisis de expresión diferencial usando un modelo lineal de acuerdo al paquete `limma`. Con este ajuste se aumenta el poder estadístico del test de la t de Student, ganando fiabilidad en los resultados. Se definirán distintos contrastes para evaluar tanto el efecto del sexo como del ayuno sufrido por algunos animales, así como la interacción de ambos.
+
+```{r}
+#| label: limma
+#| warning: false
+
+library(limma)
+
+design<-model.matrix(~sexo*tratamiento, data = pData(gse37305))
+
+colnames(design)<-make.names(colnames(design))
+
+contrastes <- makeContrasts(
+  sexo = sexomale,
+  tratamiento = tratamientofasted,
+  interaccion = sexomale.tratamientofasted,
+  levels = design
+)
+
+fit<-limma::lmFit(exprs(gse37305),design) 
+
+fit<-contrasts.fit(fit, contrastes)
+fit<-limma::eBayes(fit)
+
+# Obtener anotaciones
+annotations<-fData(gse37305)
+rownames(fData(gse37305))<-fData(gse37305)$PROBEID
+```
+
+En todos los casos se evaluará un modelo con constante y se declararán significativos aquellos genes con una tasa de falso positivo menor al 5 %, anto por el ajuste de Benjamini-Hochberg como de Bonferroni.
+
+### ¿Qué efecto tiene el sexo en *C. elegans*?
+
+```{r}
+#| label: limma_sex
+
+tt_sex_bh <- topTable(fit, coef = "sexo" , number = Inf, adjust.method = "BH")
+tt_sex_bh <- as.data.frame(tt_sex_bh) %>% tibble::rownames_to_column("PROBEID")
+tt_sex_bh <- left_join(tt_sex_bh, annotations, by = "PROBEID")
+
+# Preparar para ORA
+annot<-fData(gse37305)
+rownames(fData(gse37305))<-fData(gse37305)$PROBEID
+tt_annot_sex_bh<-merge(tt_sex_bh,annot, by = "row.names", 
+                       all.x = TRUE)
+
+tt_sex_bon <- topTable(fit, coef = "sexo" , number = Inf, adjust.method = "bonferroni")
+tt_sex_bon <- as.data.frame(tt_sex_bon) %>% tibble::rownames_to_column("PROBEID")
+tt_sex_bon <- left_join(tt_sex_bon, annotations, by = "PROBEID")
+```
+
+::: panel-tabset
+### Up-regulated BH
+```{r}
+#| label: lm_up_sex_bh
+#| warning: false
+
+lm_up_sex_bh <- tt_sex_bh[tt_sex_bh$t > 0 & tt_sex_bh$adj.P.Val < 0.05,]
+nrow(lm_up_sex_bh)
+generate_gene_report(lm_up_sex_bh, fdr_column = "adj.P.Val", title = "Genes sobreexpresados en machos con corrección de BH ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+### Down-regulated BH
+```{r}
+#| label: lm_down_sex_bh
+#| warning: false
+
+lm_down_sex_bh <- tt_sex_bh[tt_sex_bh$t < 0 & tt_sex_bh$adj.P.Val < 0.05,]
+nrow(lm_down_sex_bh)
+generate_gene_report(lm_down_sex_bh, fdr_column = "adj.P.Val", title = "Genes infraexpresados en machos con corrección de BH ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+### Up-regulated Bonferroni
+```{r}
+#| label: lm_up_sex_bn
+#| warning: false
+
+lm_up_sex_bn <- tt_sex_bon[tt_sex_bon$t > 0 & tt_sex_bon$adj.P.Val < 0.05,]
+nrow(lm_up_sex_bn)
+generate_gene_report(lm_up_sex_bn, fdr_column = "adj.P.Val", title = "Genes sobreexpresados en machos con corrección de Bonferroni ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+### Down-regulated Bonferroni
+```{r}
+#| label: lm_down_sex_bn
+#| warning: false
+
+lm_down_sex_bn <- tt_sex_bon[tt_sex_bon$t < 0 & tt_sex_bon$adj.P.Val < 0.05,]
+nrow(lm_down_sex_bh)
+generate_gene_report(lm_down_sex_bn, fdr_column = "adj.P.Val", title = "Genes infraexpresados en machos con corrección de Bonferroni ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+:::
+
+Tal y como se ha hecho anteriormente, se representan estos genes en un vulcano plot:
+
+::: panel-tabset
+### Benjamini-Hochberg
+```{r}
+#| label: vulcano_lm_sex_up
+#| warning: false
+library(ggplot2)
+library(plotly)
+
+sig_genes <- subset(tt_sex_bh, adj.P.Val < 0.05)
+sig_genes$Regulacion <- ifelse(sig_genes$t > 0, "Up-regulated", "Down-regulated")
+table(sig_genes$Regulacion)
+
+plot_sex<-ggplot(sig_genes, aes(x = logFC, y = -log10(adj.P.Val), color = Regulacion)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("Up-regulated" = "red", "Down-regulated" = "blue")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Análisis del efecto del sexo en C.elegans",
+    x = "Log2 Fold Change",
+    y = "-Log10 FDR"
+  )
+
+ggplotly(plot_sex, tooltip = "text")
+```
+### Bonferroni
+```{r}
+#| label: vulcano_lm_sex_up_bn
+#| warning: false
+library(ggplot2)
+library(plotly)
+
+sig_genes <- subset(tt_sex_bon, adj.P.Val < 0.05)
+sig_genes$Regulacion <- ifelse(sig_genes$t > 0, "Up-regulated", "Down-regulated")
+table(sig_genes$Regulacion)
+
+plot_sex<-ggplot(sig_genes, aes(x = logFC, y = -log10(adj.P.Val), color = Regulacion)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("Up-regulated" = "red", "Down-regulated" = "blue")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Análisis del efecto del sexo en C.elegans",
+    x = "Log2 Fold Change",
+    y = "-Log10 FDR"
+  )
+
+ggplotly(plot_sex, tooltip = "text")
+```
+:::
+
+Estos resultados siguen sosteniendo la hipótesis formulada en la línea del análisis marginal, donde se proponía que había rutas específicas tanto para machos como para hermafroditas. No obstante, el refinamiento del análisis al inferir un modelo lineal ha aumentado, disminuyendo los genes estadísticamente significativos en todos los casos.
+
+### ¿Influye el ayuno en la expresión génica?
+
+```{r}
+#| label: limma_fast
+
+tt_tr_bh <- topTable(fit, coef = "tratamiento" , number = Inf, adjust.method = "BH")
+tt_tr_bh <- as.data.frame(tt_tr_bh) %>% tibble::rownames_to_column("PROBEID")
+tt_tr_bh <- left_join(tt_tr_bh, annotations, by = "PROBEID")
+
+# Preparar para ORA
+tt_annot_tr_bh<-merge(tt_tr_bh,annot, by = "row.names", 
+                       all.x = TRUE)
+
+tt_tr_bon <- topTable(fit, coef = "tratamiento" , number = Inf, adjust.method = "bonferroni")
+tt_tr_bon <- as.data.frame(tt_tr_bon) %>% tibble::rownames_to_column("PROBEID")
+tt_tr_bon <- left_join(tt_tr_bon, annotations, by = "PROBEID")
+```
+
+::: panel-tabset
+### Up-regulated BH
+```{r}
+#| label: lm_up_fast_bh
+#| warning: false
+
+lm_up_fast_bh <- tt_tr_bh[tt_tr_bh$t > 0 & tt_tr_bh$adj.P.Val < 0.05,]
+nrow(lm_up_fast_bh)
+generate_gene_report(lm_up_fast_bh, fdr_column = "adj.P.Val", title = "Genes sobreexpresados en ayuno con corrección de BH ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+### Down-regulated BH
+```{r}
+#| label: lm_down_fast_bh
+#| warning: false
+
+lm_down_fast_bh <- tt_tr_bh[tt_tr_bh$t < 0 & tt_tr_bh$adj.P.Val < 0.05,]
+nrow(lm_down_fast_bh)
+generate_gene_report(lm_down_fast_bh, fdr_column = "adj.P.Val", title = "Genes infraexpresados en ayuno con corrección de BH ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+### Up-regulated Bonferroni
+```{r}
+#| label: lm_up_fast_bn
+#| warning: false
+
+lm_up_fast_bn <- tt_tr_bon[tt_tr_bon$t > 0 & tt_tr_bon$adj.P.Val < 0.05,]
+nrow(lm_up_fast_bn)
+generate_gene_report(lm_up_fast_bn, fdr_column = "adj.P.Val", title = "Genes sobreexpresados en ayuno con corrección de Bonferroni ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+### Down-regulated Bonferroni
+```{r}
+#| label: lm_down_fast_bn
+#| warning: false
+
+lm_down_fast_bn <- tt_tr_bon[tt_tr_bon$t < 0 & tt_tr_bon$adj.P.Val < 0.05,]
+nrow(lm_down_fast_bn)
+generate_gene_report(lm_down_fast_bn, fdr_column = "adj.P.Val", title = "Genes infraexpresados en ayuno con corrección de Bonferroni ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+:::
+
+Representamos ahora gráficamente estos resultados: 
+
+::: panel-tabset
+### Benjamini-Hochberg
+```{r}
+#| label: vulcano_lm_tr_up
+#| warning: false
+library(ggplot2)
+library(plotly)
+
+sig_genes <- subset(tt_tr_bh, adj.P.Val < 0.05)
+sig_genes$Regulacion <- ifelse(sig_genes$t > 0, "Up-regulated", "Down-regulated")
+table(sig_genes$Regulacion)
+
+plot_sex<-ggplot(sig_genes, aes(x = logFC, y = -log10(adj.P.Val), color = Regulacion)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("Up-regulated" = "red", "Down-regulated" = "blue")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Análisis del efecto de la dieta en C.elegans",
+    x = "Log2 Fold Change",
+    y = "-Log10 FDR"
+  )
+
+ggplotly(plot_sex, tooltip = "text")
+```
+### Bonferroni
+```{r}
+#| label: vulcano_lm_tr_up_bn
+#| warning: false
+library(ggplot2)
+library(plotly)
+
+sig_genes <- subset(tt_tr_bon, adj.P.Val < 0.05)
+sig_genes$Regulacion <- ifelse(sig_genes$t > 0, "Up-regulated", "Down-regulated")
+table(sig_genes$Regulacion)
+
+plot_sex<-ggplot(sig_genes, aes(x = logFC, y = -log10(adj.P.Val), color = Regulacion)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("Up-regulated" = "red", "Down-regulated" = "blue")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Análisis del efecto de la dieta en C.elegans",
+    x = "Log2 Fold Change",
+    y = "-Log10 FDR"
+  )
+
+ggplotly(plot_sex, tooltip = "text")
+```
+:::
+
+En este caso, tanto en genes sobreexpresados en ayuno como en los que tienen más expresión en el control se observan muchos genes de vías metabólicas de ácidos grasos o aminoácidos, indicando tal y como se ha mencionado antes en en análisis marginal.
+Cabe destacar que los genes estadísticamente significativos tras aplicar una corrección de Bonferroni es mucho menor en este caso, dada su naturaleza estricta.
+
+### ¿Hay interacción entre ambos componentes?
+
+Finalmente se analizará la interacción entre sexo y tipo de alimentación, ya que el test de la t moderado sí lo permite sin perder poder estadístico, gracias al ajuste del modelo lineal.
+
+```{r}
+#| label: limma_int
+
+tti_bh <- topTable(fit, coef = "interaccion" , number = Inf, adjust.method = "BH")
+tti_bh <- as.data.frame(tti_bh) %>% tibble::rownames_to_column("PROBEID")
+tti_bh <- left_join(tti_bh, annotations, by = "PROBEID")
+
+# Preparar para ORA
+tt_annot_i_bh<-merge(tti_bh,annot, by = "row.names", 
+                       all.x = TRUE)
+
+tti_bon <- topTable(fit, coef = "interaccion" , number = Inf, adjust.method = "bonferroni")
+tti_bon <- as.data.frame(tti_bon) %>% tibble::rownames_to_column("PROBEID")
+tti_bon <- left_join(tti_bon, annotations, by = "PROBEID")
+```
+
+::: panel-tabset
+### Up-regulated BH
+
+```{r}
+#| label: lm_up_i_bh
+#| warning: false
+
+lm_up_i_bh <- tti_bh[tti_bh$t > 0 & tt_tr_bh$adj.P.Val < 0.05,]
+nrow(lm_up_i_bh)
+generate_gene_report(lm_up_i_bh, fdr_column = "adj.P.Val", title = "Genes sobreexpresados en la interacción entre sexo y dieta con corrección de BH ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+
+### Down-regulated BH
+
+```{r}
+#| label: lm_down_i_bh
+#| warning: false
+
+lm_down_i_bh <- tti_bh[tti_bh$t < 0 & tti_bh$adj.P.Val < 0.05,]
+nrow(lm_down_fast_bh)
+generate_gene_report(lm_down_fast_bh, fdr_column = "adj.P.Val", title = "Genes infraexpresados en la interacción entre sexo y dieta con corrección de BH ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+
+### Up-regulated Bonferroni
+
+```{r}
+#| label: lm_up_i_bn
+#| warning: false
+
+lm_up_i_bn <- tti_bon[tti_bon$t > 0 & tti_bon$adj.P.Val < 0.05,]
+nrow(lm_up_i_bn)
+generate_gene_report(lm_up_i_bn, fdr_column = "adj.P.Val", title = "Genes sobreexpresados en la interacción entre sexo y dieta con corrección de Bonferroni ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+
+### Down-regulated Bonferroni
+
+```{r}
+#| label: lm_down_i_bn
+#| warning: false
+
+lm_down_i_bn <- tti_bon[tti_bon$t < 0 & tti_bon$adj.P.Val < 0.05,]
+nrow(lm_down_i_bn)
+generate_gene_report(lm_down_i_bn, fdr_column = "adj.P.Val", title = "Genes infraexpresados en la interacción entre sexo y dieta con corrección de Bonferroni ajustando un modelo lineal", fc_column="t", fdr_threshold = 0.05)
+```
+:::
+
+Finalmente se visualizarán estos resultados mediante un vulcano plot, como en los casos anteriores.
+
+::: panel-tabset
+### Benjamini-Hochberg
+
+```{r}
+#| label: vulcano_lm_i_up
+#| warning: false
+library(ggplot2)
+library(plotly)
+
+sig_genes <- subset(tti_bh, adj.P.Val < 0.05)
+sig_genes$Regulacion <- ifelse(sig_genes$t > 0, "Up-regulated", "Down-regulated")
+table(sig_genes$Regulacion)
+
+plot_sex<-ggplot(sig_genes, aes(x = logFC, y = -log10(adj.P.Val), color = Regulacion)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("Up-regulated" = "red", "Down-regulated" = "blue")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Análisis del efecto de la interacción sexo:dieta en C.elegans",
+    x = "Log2 Fold Change",
+    y = "-Log10 FDR"
+  )
+
+ggplotly(plot_sex, tooltip = "text")
+```
+### Bonferroni
+```{r}
+#| label: vulcano_lm_i_up_bn
+#| warning: false
+library(ggplot2)
+library(plotly)
+
+sig_genes <- subset(tti_bon, adj.P.Val < 0.05)
+sig_genes$Regulacion <- ifelse(sig_genes$t > 0, "Up-regulated", "Down-regulated")
+table(sig_genes$Regulacion)
+
+plot_sex<-ggplot(sig_genes, aes(x = logFC, y = -log10(adj.P.Val), color = Regulacion)) +
+  geom_point(alpha = 0.8) +
+  scale_color_manual(values = c("Up-regulated" = "red", "Down-regulated" = "blue")) +
+  theme_minimal() +
+  labs(
+    title = "Volcano Plot: Análisis del efecto de la interacción sexo:dieta en C.elegans",
+    x = "Log2 Fold Change",
+    y = "-Log10 FDR"
+  )
+
+ggplotly(plot_sex, tooltip = "text")
+```
+:::
+
+Tal y como puede comprobarse, si hay una interacción entre la dieta y el sexo, ya que hay genes estadísticamente significativos para las dos correcciones, tanto sobreexpresados como infraexpresados.
+Así, se demostraría que la respuesta al ayuno cambia según si *Caenorhabditis elegans* es macho o hermafrodita.
+Para comprobar cuales son las rutas que potencialmente cambian se realizará a continuación un análisis por grupos de genes.
+
+# Colecciones de genes
+
+## Obtención de las colecciones de genes
+
+En primer lugar, se crearán las collecciones de genes procedentes tanto de GeneOntology como de KEGG, que se usarán posteriormente para el análisis de grupos:
+
+```{r}
+#| label: gsc
+#| eval: true
+#| warning: false
+
+library(celegans.db)
+library(GO.db)
+library(GSEABase)
+
+#GO
+frame = toTable(org.Ce.egGO) 
+goframeData = data.frame(frame$go_id, frame$Evidence, frame$gene_id) 
+goFrame = GOFrame(goframeData, organism = "Caenorhabditis elegans") 
+goAllFrame = GOAllFrame(goFrame) 
+gscCe = GeneSetCollection(goAllFrame, setType = GOCollection()) 
+gscCe = geneIds(gscCe) 
+names(gscCe) <- paste0(
+      names(gscCe), "_",
+      Term(GOTERM[names(gscCe)])
+    )
+
+#KEGG
+kegg_annotations <- as.list(org.Ce.egPATH2EG)
+kegg_genesets <- lapply(names(kegg_annotations), function(pathway_id) {
+  genes <- kegg_annotations[[pathway_id]]
+  if (length(genes) > 0) {
+    GeneSet(
+      geneIds = genes,
+      setName = pathway_id,  
+      collectionType = KEGGCollection(),
+      organism = "Caenorhabditis elegans"
+    )
+  }
+})
+
+gscKEGG0 <- GeneSetCollection(kegg_genesets)
+gscKEGG <- geneIds(gscKEGG0)
+```
+
+Las colecciones creadas pueden guardarse usando estas funciones:
+
+```{r}
+#| label: save_gsc
+#| eval: false
+
+save(gscCe,file = "gscCe.rda")
+save(gscKEGG, file = "gscKEGG_Celegans.rda")
+```
+
+## Función de reporte para colecciones de genes
+
+Se ha adaptado la función de reporte mostrada anteriormente para poder reportar las colecciones de genes con sobrerepresentación:
+
+```{r}
+#| label: html_gsc
+library(KEGGREST)
+pathways <- keggList("pathway", "cel")
+
+generate_ora_report <- function(df,
+                               title = "",
+                               analysis_type = c("GO", "KEGG"),
+                               threshold = 0.05,
+                               pathways = NULL) {
+  require(dplyr)
+  require(DT)
+  require(tami)
+  require(htmltools)
+  require(tibble)
+  
+  analysis_type <- match.arg(analysis_type)
+  df <- tibble::rownames_to_column(df, var = "Name")
+  
+  if (analysis_type == "KEGG") {
+    if (!is.null(pathways)) {
+      pathway_names <- gsub(" - Caenorhabditis elegans \\(nematode\\)", "", pathways)
+      names(pathway_names) <- names(pathways)
+    }
+    
+    report_df <- df %>%
+      dplyr::filter(rawp < threshold) %>%
+      dplyr::arrange(rawp) %>%
+      mutate(
+        ID = Name,  
+        Activity = if (!is.null(pathways)) {
+          ifelse(ID %in% names(pathway_names), pathway_names[ID], ID)
+        } else {
+          ID
+        },
+        Link = ifelse(!is.na(ID) & ID != "", tami::kegg2url(ID), NA_character_)
+      )
+  } else {
+    report_df <- df %>%
+      dplyr::filter(rawp < threshold) %>%
+      dplyr::arrange(rawp) %>%
+      mutate(
+        GO_ID = sub("_.*", "", Name),
+        Activity = Term(GOTERM[GO_ID]),
+        Link = ifelse(!is.na(GO_ID) & GO_ID != "", tami::go2url(GO_ID), NA_character_)
+      )
+  }
+  
+  report_df <- report_df %>%
+    dplyr::rename(
+      `P.value` = rawp,
+      `Odds.Ratio` = OR
+    ) %>%
+    dplyr::select(Activity, `P.value`, `Odds.Ratio`, Link) %>%
+    tidyr::drop_na(Activity)
+  
+  dt <- DT::datatable(
+    report_df,
+    escape = FALSE,
+    extensions = c('Buttons'),
+    options = list(
+      dom = 'Bfrtip',
+      buttons = c('copy', 'csv', 'excel', 'pdf'),
+      pageLength = 10,
+      columnDefs = list(
+        list(
+          targets = 3,  
+          render =  DT::JS(
+            "
+            function(data, type, row) {
+              if (data === null || data === undefined || data === 'NA' || data === '') {
+                return '';
+              }
+              return data;
+            }
+          "
+          ),
+          className = 'dt-center'
+        )
+      ),
+      language = list(
+        emptyTable = "No hay datos disponibles" 
+      )
+    ),
+    rownames = FALSE,
+    class = 'display nowrap'
+  )
+  
+  htmltools::tagList(
+    htmltools::tags$h3(title),
+    dt
+  )
+}
+```
+
+# Análisis de sobrerepresentación
+
+Para realizar el análisis de sobrerepresentación se utilizará el método `ora`, incluido en el paquete `tami` @Ayala2025, que se basa en el test de Fisher para comprobar cuantos genes pertenecientes a los grupos son significativos, según el *universo de genes* que tengamos. En este caso se utilizará una tasa de error del 10 %.
+
+## Análisis mediante la colección de la Gene Ontology
+
+En primer lugar se utilizarán las colecciones de genes basadas en la base de datos *Gene Ontology*. Para un análisis que refleje mejor la realidad, se usarán los resultados correspondientes al análisis `limma` donde se ha ajustado un modelo lineal para los datos. Este modleo permite comparar más grupos, pudiendo interpretar así las interacciones entre grupos. Asimismo, se usará la el P-valor ajustado mediante el método de Benjamini-Hochberg, que no es tan conservador como Bonferroni.
+
+De toda la colección, únicamente se realizará el análisis para grupos que contengan entre 5 y 100 genes (evitando los grupos con pocos genes o con muchos, que no aportarán mucha información):
+
+```{r}
+#| label: filtrar_gsc
+
+elim<-which(sapply(gscCe, length)<5 | sapply(gscCe, length)>100)
+gscCe<-gscCe[-elim]
+```
+
+### ¿Qué colecciones se encuentran expresadas diferencialmente según el sexo en *C. elegans*?
+
+::: panel-tabset
+### Colecciones up-regulated
+
+```{r}
+#| label: ora_go_sex_up
+#| warning: false
+
+library(tami)
+
+lm_up_sex_bh <- which(tt_annot_sex_bh$adj.P.Val<0.05 &
+              tt_annot_sex_bh$t>0)
+genes<-fData(gse37305)$ENTREZID[lm_up_sex_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+
+ora_up_sex_go<-ora(genes, gsc = gscCe)
+informe_ora_sex_up<-generate_ora_report(ora_up_sex_go, title = "Análisis de sobrerepresentación de grupos según el sexo para genes sobrerepresentados en machos respecto hermafroditas", threshold=.1, analysis_type = "GO")
+
+informe_ora_sex_up
+```
+
+### Colecciones down-regulated
+
+```{r}
+#| label: ora_go_sex_down
+lm_down_sex_bh <- which(tt_annot_sex_bh$adj.P.Val<0.05 &
+              tt_annot_sex_bh$t<0)
+genes<-fData(gse37305)$ENTREZID[lm_down_sex_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+
+ora_down_sex_go<-ora(genes, gsc = gscCe)
+informe_ora_sex_down<-generate_ora_report(ora_down_sex_go, title = "Análisis de sobrerepresentación de grupos según el sexo para genes infraexpresados en machos respecto hermafroditas", threshold=.1, analysis_type = "GO")
+
+informe_ora_sex_down
+```
+:::
+
+Aunque sí se han encontrado genes significativos para cada uno de los dos sexos, la combinación de ellos no es suficiente para que haya una sobrerepresentación de ningún grupo en alguno de los sexos, más allá de la actividad hidrolasa en la hidrólisis de compuestos N-glicosilados y del alineamiento de los cromosomas en la metafase de la meiosis. Esto indicaría que aunque sí que hay cambios en la expresión entre ambos sexos, no se podrían asociar a cambios en una función concreta. No obstante esto se terminará de comprobar más tarde, al realizar un análisis de grupos de genes completo, con más poder estadístico.
+
+### ¿Influye el ayuno en la expresión de las colecciones de genes?
+
+::: panel-tabset
+### Colecciones up-regulated
+
+```{r}
+#| label: ora_go_tr_up
+#| warning: false
+lm_up_tr_bh <- which(tt_annot_tr_bh$adj.P.Val<0.05 &
+              tt_annot_tr_bh$t>0)
+genes<-fData(gse37305)$ENTREZID[lm_up_tr_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+
+ora_up_tr_go<-ora(genes, gsc = gscCe)
+informe_ora_tr_up<-generate_ora_report(ora_up_tr_go, title = "Análisis de sobrerepresentación de grupos según la dieta para genes sobreexpresados en animales ayunados", threshold=.1, analysis_type = "GO")
+
+informe_ora_tr_up
+```
+
+### Colecciones down-regulated
+
+```{r}
+#| label: ora_go_tr_down
+lm_down_tr_bh <- which(tt_annot_tr_bh$adj.P.Val<0.05 &
+              tt_annot_tr_bh$t<0)
+genes<-fData(gse37305)$ENTREZID[lm_down_tr_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+
+ora_down_tr_go<-ora(genes, gsc = gscCe)
+informe_ora_tr_down<-generate_ora_report(ora_down_tr_go, title = "Análisis de sobrerepresentación de grupos según la dieta para genes infraexpresados en animales ayunados", threshold=.1, analysis_type = "GO")
+
+informe_ora_tr_down
+```
+:::
+
+En este caso es interesante visualizar mediante un gráfico de burbujas las colecciones de genes sobrerepresentadas en cada caso, y establecer una priorización según su p-valor ajustado y su odds-ratio.
+
+:::{.panel-tabset}
+### Colecciones up-reguladas
+```{r}
+#| label: plot_go_tr_up
+#| warning: false
+library(ggplot2)
+library(plotly)
+library(dplyr)
+
+top_terms <- ora_up_tr_go %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "id") %>%
+  filter(rawp < 0.05 & OR > 0) %>%
+  mutate(
+    logP = -log10(rawp),
+    name_short = sub("GO:\\d+_", "", id),
+    name_short = ifelse(nchar(name_short) > 30,
+                        paste0(substr(name_short, 1, 27), "..."),
+                        name_short),
+    tooltip_text = paste0("Término: ", id,
+                          "<br>p-valor: ", signif(rawp, 3),
+                          "<br>Odds Ratio: ", signif(OR, 3))
+  ) %>%
+  arrange(rawp)
+
+p <- ggplot(top_terms, aes(x = logP, y = reorder(name_short, logP))) +
+  geom_point(aes(size = OR, color = OR, text = tooltip_text)) +
+  scale_color_gradient(low = "skyblue", high = "darkred") +
+  labs(
+    title = "Grupos de genes GO sobre-representados en condición de ayuno",
+    x = "-log10(p-valor)",
+    y = "Grupo de genes",
+    size = "Odds Ratio",
+    color = "Odds Ratio"
+  ) +
+  theme_minimal() +
+  theme(
+    theme(
+  axis.text.y = element_text(size = 8),
+  plot.title = element_text(size = 14, face = "bold")
+)
+  )
+
+ggplotly(p, tooltip = "text")
+```
+### Colecciones down-reguladas
+```{r}
+#| label: plot_go_tr_down
+#| warning: false
+library(ggplot2)
+library(plotly)
+library(dplyr)
+
+top_terms <- ora_down_tr_go %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "id") %>%
+  filter(rawp < 0.05 & OR > 0) %>%
+  mutate(
+    logP = -log10(rawp),
+    name_short = sub("GO:\\d+_", "", id),
+    name_short = ifelse(nchar(name_short) > 30,
+                        paste0(substr(name_short, 1, 27), "..."),
+                        name_short),
+    tooltip_text = paste0("Término: ", id,
+                          "<br>p-valor: ", signif(rawp, 3),
+                          "<br>Odds Ratio: ", signif(OR, 3))
+  ) %>%
+  arrange(rawp)
+
+p <- ggplot(top_terms, aes(x = logP, y = reorder(name_short, logP))) +
+  geom_point(aes(size = OR, color = OR, text = tooltip_text)) +
+  scale_color_gradient(low = "skyblue", high = "darkred") +
+  labs(
+    title = "Grupos de genes GO infra-representados en condición de ayuno",
+    x = "-log10(p-valor)",
+    y = "Grupo de genes",
+    size = "Odds Ratio",
+    color = "Odds Ratio"
+  ) +
+  theme_minimal() +
+  theme(
+    theme(
+  axis.text.y = element_text(size = 8),
+  plot.title = element_text(size = 14, face = "bold")
+)
+  )
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+La conclusión principal que se extrae de este análisis es que el ayuno sí cambiaría la expresión de distintos grupos de genes en *C. elegans*. De hecho, se encuantran sobrerepresentados y con un alto *odds ratio* grupos relacionados con la mitosis y división celular, sobretodo, y algunos procesos relacionados con el mantenimiento celular, como el transporte a Golgi o la organización del cioesqueleto.
+Por otro lado, hay algunas colecciones de genes que se encontrarían más expresadas en animales sometidos a una dieta *ad libitum*, como por ejemplo metabolismo de ácidos grasos (catabolismo) o rutas de señalización como kinasas, que indicarían una suficiente energía (ATP) a nivel celular, al no estar en condiciones de ayuno.
+
+### ¿Hay interacción entre ambos componentes?
+
+::: panel-tabset
+### Colecciones up-regulated
+
+```{r}
+#| label: ora_go_i_up
+#| warning: false
+
+lm_up_i_bh <- which(tt_annot_i_bh$adj.P.Val<0.05 &
+              tt_annot_i_bh$t>0)
+genes<-fData(gse37305)$ENTREZID[lm_up_i_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+
+ora_up_i_go<-ora(genes, gsc = gscCe)
+informe_ora_i_up<-generate_ora_report(ora_up_i_go, title = "Análisis de sobrerepresentación de grupos en la interacción de ambas condiciones", threshold=0.05, analysis_type = "GO")
+
+informe_ora_i_up
+```
+
+### Colecciones down-regulated
+
+```{r}
+#| label: ora_go_i_down
+lm_down_i_bh <- which(tt_annot_i_bh$adj.P.Val<0.05 &
+              tt_annot_i_bh$t<0)
+genes<-fData(gse37305)$ENTREZID[lm_down_i_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+
+ora_down_i_go<-ora(genes, gsc = gscCe)
+informe_ora_i_down<-generate_ora_report(ora_down_i_go, title = "Análisis de grupos infraexpresados en la interacción de ambas condiciones", threshold=0.05, analysis_type = "GO")
+
+informe_ora_i_down
+```
+:::
+
+Al evaluar sobrerepresentación de grupos de genesen la interacción de sexo y dieta ocurre lo mismo que anteriormente. Aunque sí se habían visto genes estadísticamente significativos que indicaban interacción en condiciones de ayuno para hermafroditas, no se pueden asociar colecciones a ello. No obstante sí se ven colecciones de genes infraexpresados que han resultado significativas en este análisis. Estas estan relacionadas con dos orgánulos muy concretos: el endosoma y el gránulo, una estructura de tipo lisosoma que se encuentra en *C.elegans* en algunas condiciones, por ejemplo de estrés, pero también en desarrollo o longevidad.
+
+## Análisis mediante la colección KEGG
+
+En esta ocasión se usarán grupos de la colección que contengan almenos 5 genes:
+
+```{r}
+#| label: filtrar_kegg
+
+elim<-which(sapply(gscKEGG, length)<5)
+gscKEGG<-gscKEGG[-elim]
+```
+
+### ¿Qué colecciones se encuentran expresadas diferencialmente según el sexo en *C. elegans*?
+
+::: panel-tabset
+### Colecciones up-regulated
+
+```{r}
+#| label: ora_k_sex_up
+#| warning: false
+
+library(tami)
+
+lm_up_s_bh <- which(tt_annot_sex_bh$adj.P.Val<0.05 &
+                       tt_annot_sex_bh$t>0)
+kegg_genes<-unique(unlist(gscKEGG))
+genes<-fData(gse37305)$ENTREZID[lm_up_s_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+genes_validos <- genes[genes %in% kegg_genes]
+
+pathways <- keggList("pathway", "cel")
+ora_up_sex_k<-ora(genes_validos, gsc = gscKEGG)
+sum(ora_up_sex_k$rawp<0.1)
+rownames(ora_up_sex_k) <- paste0("cel", rownames(ora_up_sex_k))
+informe_ora_sex_up<-generate_ora_report(ora_up_sex_k, title = "Análisis de sobrerepresentación de grupos según el sexo para genes sobrerepresentados en machos respecto hermafroditas", threshold=0.1, analysis_type = "KEGG", pathways=pathways)
+
+informe_ora_sex_up
+```
+
+### Colecciones down-regulated
+
+```{r}
+#| label: ora_k_sex_down
+lm_down_sex_bh <- which(tt_annot_sex_bh$adj.P.Val<0.05 &
+                          tt_annot_sex_bh$t<0)
+genes<-fData(gse37305)$ENTREZID[lm_down_sex_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+genes_validos <- genes[genes %in% kegg_genes]
+
+ora_down_sex_k<-ora(genes_validos, gsc = gscKEGG)
+sum(ora_down_sex_k$rawp<0.1)
+rownames(ora_down_sex_k) <- paste0("cel", rownames(ora_down_sex_k))
+informe_ora_sex_down<-generate_ora_report(ora_down_sex_k, title = "Análisis de sobrerepresentación de grupos según el sexo para genes infraexpresados en machos respecto hermafroditas", threshold=0.1, analysis_type = "KEGG", pathways=pathways)
+
+informe_ora_sex_down
+```
+:::
+
+En este caso se han podido asociar a importantes vías metabólicas de KEGG una sobrerepresentación en machos, como es el caso del ciclo de Krebs, o ciertas partes del metabolismo de hidratos de carbono, aminoácidos o ácidos grasos.
+En el caso de hermafroditas, se verian sobrerepresentadas vías del metabolismo secundario como el retinol, profirinas, etc. También se ven sobrerepresentadas vías de señalización como mTOR, o de detoxificación como el citocromo P450.
+
+### ¿Influye el ayuno en la expresión de las colecciones de genes?
+
+::: panel-tabset
+### Colecciones up-regulated
+
+```{r}
+#| label: ora_k_tr_up
+#| warning: false
+library(tami)
+lm_up_tr_bh <- which(tt_annot_tr_bh$adj.P.Val<0.05 &
+              tt_annot_tr_bh$t>0)
+genes<-fData(gse37305)$ENTREZID[lm_up_tr_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+
+ora_up_tr_k<-ora(genes, gsc = gscKEGG)
+sum(ora_up_tr_k$rawp<0.1)
+informe_ora_tr_up<-generate_ora_report(ora_up_tr_k, title = "Análisis de sobrerepresentación de grupos según la dieta para genes infraexpresados en animales ayunados", threshold=0.1, analysis_type = "KEGG", pathways= pathways)
+
+informe_ora_tr_up
+```
+
+### Colecciones down-regulated
+
+```{r}
+#| label: ora_kegg_tr_down
+
+lm_down_tr_bh <- which(tt_annot_tr_bh$adj.P.Val<0.05 &
+              tt_annot_tr_bh$t<0)
+genes<-fData(gse37305)$ENTREZID[lm_down_tr_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+
+ora_down_tr_k<-ora(genes, gsc = gscKEGG)
+informe_ora_tr_down<-generate_ora_report(ora_down_tr_k, title = "Análisis de sobrerepresentación de grupos según la dieta para genes infraexpresados en animales ayunados", threshold=0.1, analysis_type = "KEGG",pathways= pathways)
+
+informe_ora_tr_down
+```
+:::
+
+### ¿Hay interacción entre ambos componentes?
+
+::: panel-tabset
+### Colecciones up-regulated
+
+```{r}
+#| label: ora_k_i_up
+#| warning: false
+
+lm_up_i_bh <- which(tt_annot_i_bh$adj.P.Val<0.05 &
+              tt_annot_i_bh$t>0)
+genes<-fData(gse37305)$ENTREZID[lm_up_i_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+
+ora_up_i_k<-ora(genes, gsc = gscKEGG)
+informe_ora_i_up<-generate_ora_report(ora_up_i_k, title = "Análisis de sobrerepresentación de grupos en la interacción de ambas condiciones", threshold=0.1, analysis_type = "KEGG",pathways= pathways)
+
+informe_ora_i_up
+```
+
+### Colecciones down-regulated
+
+```{r}
+#| label: ora_k_i_down
+lm_down_i_bh <- which(tt_annot_i_bh$adj.P.Val<0.05 &
+              tt_annot_i_bh$t<0)
+genes<-fData(gse37305)$ENTREZID[lm_down_i_bh]
+genes<-na.omit(genes)
+genes<-unique(genes)
+
+ora_down_i_k<-ora(genes, gsc = gscKEGG)
+informe_ora_i_down<-generate_ora_report(ora_down_i_k, title = "Análisis de grupos infraexpresados en la interacción de ambas condiciones", threshold=0.1, analysis_type = "KEGG",pathways= pathways)
+
+informe_ora_i_down
+```
+:::
+
+En este caso los análisis mediante la colección KEGG no ha dado resultados estadísticamente significativos en algunas comparaciones, lo que indicaría que no habría vías metabólicas sobrerepresentadas en condiciones de ayuno y tampoco en la interacción de las mismas.
+No obstante se procederá ahora a realizar un análisis de grupos de genes, con más poder estadístico, para determinarlo.
+
+# Análisis de grupos de genes
+
+Finalmente, con las colecciones que se han creado y el ExpressionSet, se realizará un análisis de grupos de genes, usando la función `GenSetTest`, incluída en el paquete `tami` @Ayala2025. Para ello, se deberá convertir el objeto `ExpressionSet` en `Summarized Experiment` mediante la función `makeSummarizedExperimentFromExpressionSet()` del paquete `SummarizedExperiment`.
+
+```{r}
+#| label: EStoSE
+#| warning: false
+
+library(tami)
+eset<-gse37305
+
+library(SummarizedExperiment)
+se_eset = makeSummarizedExperimentFromExpressionSet(eset)
+```
+
+En todos los casos se evaluará tanto la hipótesis nula auto-contenida (los grupos analizados no tienen genes significativos asociados con su fenotipo), como la nula competitiva (los genes del grupo siguen el mismo patrón que el fenotipo, comparado con el resto de genes). Se usará un test de la t moderado, evaluando tanto el efecto del sexo como de la dieta en las coleccions de GO y KEGG.
+
+## Función de reporte para el Gene Set Analysis
+
+A continuación se muestra la función de reporte en tabla HTML, con las adaptaciones necesarias para leer correctamente la salida del Gene Set Analysis:
+
+```{r}
+#| label: html_gsa
+#| warning: false
+generate_gsa_report <- function(df,
+                               title = "",
+                               analysis_type = c("GO", "KEGG"),
+                               threshold = 0.05,
+                               pathways = NULL) {
+  require(dplyr)
+  require(DT)
+  require(tami)
+  require(htmltools)
+  require(tibble)
+  require(tidyr)
+  
+  analysis_type <- match.arg(analysis_type)
+
+  
+  if (analysis_type == "KEGG") {
+    if (!"KEGG" %in% colnames(df)) stop("No existe la columna 'KEGG' en df")
+    df <- df %>% rename(Name = KEGG)
+  } else {
+    if (!"GO" %in% colnames(df)) stop("No existe la columna 'GO' en df")
+    df <- df %>% rename(Name = GO)
+  }
+  
+  if (analysis_type == "KEGG") {
+    if (!is.null(pathways)) {
+      pathway_names <- gsub(" - Caenorhabditis elegans \\(nematode\\)", "", pathways)
+      names(pathway_names) <- names(pathways)
+    }
+    report_df <- df %>%
+      filter(!is.na(adjp) & adjp < threshold) %>%
+      arrange(adjp) %>%
+      mutate(
+        ID = Name,
+        Activity = if (!is.null(pathways)) {
+          ifelse(ID %in% names(pathway_names), pathway_names[ID], ID)
+        } else {
+          ID
+        },
+        Link = ifelse(!is.na(ID) & ID != "", tami::kegg2url(ID), NA_character_)
+      )
+  } else {
+    report_df <- df %>%
+      filter(!is.na(adjp) & adjp < threshold) %>%
+      arrange(adjp) %>%
+      mutate(
+        GO_ID = sub("_.*", "", Name),
+        Activity = Term(GOTERM[GO_ID]),
+        Link = ifelse(!is.na(GO_ID) & GO_ID != "", tami::go2url(GO_ID), NA_character_)
+      )
+  }
+  
+  report_df <- report_df %>%
+    dplyr::select(Activity, statistic, adjp, Link) %>%
+    drop_na(Activity)
+  
+  DT::datatable(
+    report_df,
+    escape = FALSE,
+    extensions = c('Buttons'),
+    options = list(
+      dom = 'Bfrtip',
+      buttons = c('copy', 'csv', 'excel', 'pdf'),
+      pageLength = 10,
+      columnDefs = list(
+        list(
+          targets = 3,
+          render = DT::JS("
+            function(data, type, row) {
+              if (data === null || data === undefined || data === 'NA' || data === '') {
+                return '';
+              }
+              return data;
+            }
+          "),
+          className = 'dt-center'
+        )
+      ),
+      language = list(emptyTable = "No hay datos disponibles")
+    ),
+    rownames = FALSE,
+    class = 'display nowrap'
+  )
+}
+```
+
+## Análisis con la colección de Gene Ontology
+
+### ¿Qué efecto tiene el sexo en *C. elegans*?
+
+::: panel-tabset
+### Hipótesis autocontenida
+
+```{r}
+#| label: sex_go_self
+#| warning: false
+gse37305_sex_go_self <-GeneSetTest(x = se_eset ,y=sexo,gsc=gscCe,
+                                      test = rowtmod,
+                                      association="pvalue",
+                                      correction="BH",
+                                      GeneNullDistr = "randomization",
+                                      GeneSetNullDistr ="self-contained",
+                                      alternative="less",
+                                      nmax = 1000,
+                                      id = "ENTREZID",descriptive=mean)
+
+print("Número de grupos de genes estadísticamente significativos para la hipótesis auto-contenida para la variable de sexo, usando la base de datos GO:")
+
+self_sex_go <- cbind(as.data.frame(
+  gse37305_sex_go_self@GeneSetData),
+  as.data.frame(gse37305_sex_go_self@GeneSetStat))
+
+sum(self_sex_go$adjp<.05)
+
+informe_self_sex_go<-generate_gsa_report(self_sex_go, title = "Análisis de grupos de genes GO según el sexo", threshold=0.05, analysis_type = "GO", pathways = pathways)
+
+informe_self_sex_go
+```
+
+### Hipótesis competitiva
+
+```{r}
+#| label: sex_go_comp
+gse3705_sex_go_comp<- GeneSetTest(x = se_eset ,y=sexo,gsc=gscCe,
+                                  test = rowtmod,
+                                  association="pvalue",
+                                  correction="BH",
+                                  GeneNullDistr = "randomization",
+                                  GeneSetNullDistr ="competitive",
+                                  alternative="less",
+                                  nmax = 1000,
+                                  id = "ENTREZID",descriptive=mean)
+print("Número de grupos de genes estadísticamente significativos para la hipótesis competitiva para la variable de sexo, usando la base de datos GO:")
+
+comp_sex_go <- cbind(as.data.frame(
+  gse3705_sex_go_comp@GeneSetData),
+  as.data.frame(gse3705_sex_go_comp@GeneSetStat))
+
+sum(comp_sex_go$adjp<.05)
+
+informe_comp_sex_go<-generate_gsa_report(comp_sex_go, title = "Análisis de grupos de genes GO según el sexo", threshold=0.05, analysis_type = "GO", pathways = pathways)
+
+informe_comp_sex_go
+```
+:::
+
+En este caso podemos comprobar, siguiendo lo visto en el análisis del test de la t moderado que hay muchos grupos de genes que contienen genes significativos, rechazando así en ellos la hpótesis nula auto-contenida. No obstante, únicamente 4 tienen un fenotipo distinto en machos respecto a hermafroditas. Los cuatro están relacionados con el cilio en estos nemátodos, sugiriendo una mayor expresión de este orgánulo celular en hermafroditas, ya que en machos se ven infraexpresadas dunciones como la localización de porteínas o deficiencias en la zona transcicional del mismo.
+
+### ¿Influye el ayuno en la expresión génica?
+
+::: panel-tabset
+### Hipótesis autocontenida
+
+```{r}
+#| label: fast_go_self
+
+
+gse37305_fast_go_self <-GeneSetTest(x = se_eset ,y=tratamiento ,                                         gsc=gscCe, test = rowtmod,
+                                      association="pvalue",
+                                      correction="BH",
+                                    GeneNullDistr = "randomization",
+                                  GeneSetNullDistr ="self-contained",
+                                      alternative="less",
+                                      nmax = 1000,
+                                    id = "ENTREZID",descriptive=mean)
+
+print("Número de grupos de genes estadísticamente significativos para la hipótesis auto-contenida para la variable dieta, usando la base de datos GO:")
+
+self_fast_go <- cbind(as.data.frame(
+  gse37305_fast_go_self@GeneSetData),
+  as.data.frame(gse37305_fast_go_self@GeneSetStat))
+
+sum(self_fast_go$adjp<.05)
+
+informe_self_fast_go<-generate_gsa_report(self_fast_go, title = "Análisis de grupos de genes GO según la dieta", threshold=0.05, analysis_type = "GO", pathways = pathways)
+
+informe_self_fast_go
+```
+
+### Hipótesis competitiva
+
+```{r}
+#| label: fast_go_comp
+gse3705_fast_go_comp<- GeneSetTest(x = se_eset ,y=tratamiento,                                    gsc=gscCe, test = rowtmod,
+                                  association="pvalue",
+                                  correction="BH",
+                                  GeneNullDistr = "randomization",
+                                  GeneSetNullDistr ="competitive",
+                                  alternative="less",
+                                  nmax = 1000,
+                                  id = "ENTREZID",descriptive=mean)
+print("Número de grupos de genes estadísticamente significativos para la hipótesis competitiva para la dieta, usando la base de datos GO:")
+
+comp_fast_go <- cbind(as.data.frame(
+  gse3705_fast_go_comp@GeneSetData),
+  as.data.frame(gse3705_fast_go_comp@GeneSetStat))
+
+sum(comp_fast_go$adjp<.05)
+
+informe_comp_fast_go<-generate_gsa_report(comp_fast_go, title = "Análisis de grupos de genes GO según la dieta", threshold=0.05, analysis_type = "GO", pathways = pathways)
+
+informe_comp_fast_go
+```
+:::
+
+En este caso no hay efectos diferentes en el fenotipo de ayunados respecto a no ayunados, aunque muchos grupos sí tienen genes estadísticamente significativos en ellos. Estos genes estan relacionados con distintos aspectos del metabolismo celular, control del ciclo celular y de la replicación y trancripción.
+
+## Análisis con la colección KEGG
+
+### ¿Qué efecto tiene el sexo en *C. elegans*?
+
+::: panel-tabset
+### Hipótesis autocontenida
+
+```{r}
+#| label: sex_kegg_self
+
+gse37305_sex_kegg_self <-GeneSetTest(x = se_eset ,y=sexo ,                                         gsc=gscKEGG, test = rowtmod,
+                                      association="pvalue",
+                                      correction="BH",
+                                    GeneNullDistr = "randomization",
+                                  GeneSetNullDistr ="self-contained",
+                                      alternative="less",
+                                      nmax = 1000,
+                                    id = "ENTREZID",descriptive=mean)
+
+print("Número de grupos de genes estadísticamente significativos para la hipótesis auto-contenida según el sexo, usando la base de datos KEGG:")
+self_sex_k<-data.frame(gse37305_sex_kegg_self@GeneSetData,
+                        gse37305_sex_kegg_self@GeneSetStat)
+colnames(self_sex_k)[which(colnames(self_sex_k) == "GO")] <- "KEGG"
+
+self_sex_k$KEGG <- ifelse(grepl("^cel", self_sex_k$KEGG),
+                          self_sex_k$KEGG,
+                          paste0("cel", self_sex_k$KEGG))
+
+sum(self_sex_k$adjp<.05)
+
+informe_self_sex_kegg<-generate_gsa_report(self_sex_k, title = "Análisis de grupos de genes KEGG según el sexo", threshold=0.05, analysis_type = "KEGG", pathways = pathways)
+
+informe_self_sex_kegg
+```
+
+### Hipótesis competitiva
+
+```{r}
+#| label: sex_kegg_comp
+#| eval: true
+gse3705_sex_kegg_comp<- GeneSetTest(x = se_eset ,y=tratamiento,                                   gsc=gscKEGG, test = rowtmod,
+                                  association="pvalue",
+                                  correction="BH",
+                                  GeneNullDistr = "randomization",
+                                  GeneSetNullDistr ="competitive",
+                                  alternative="less",
+                                  nmax = 1000,
+                                  id = "ENTREZID",descriptive=mean)
+print("Número de grupos de genes estadísticamente significativos para la hipótesis competitiva según el sexo, usando la base de datos KEGG:")
+comp_sex_k<-data.frame(gse3705_sex_kegg_comp@GeneSetData,
+                        gse3705_sex_kegg_comp@GeneSetStat)
+colnames(comp_sex_k)[which(colnames(comp_sex_k) == "GO")] <- "KEGG"
+
+comp_sex_k$KEGG <- ifelse(grepl("^cel", comp_sex_k$KEGG),
+                          comp_sex_k$KEGG,
+                          paste0("cel", comp_sex_k$KEGG))
+
+sum(comp_sex_k$adjp<.05)
+
+informe_comp_sex_kegg<-generate_gsa_report(comp_sex_k, title = "Análisis de grupos de genes KEGG según el sexo", threshold=0.05, analysis_type = "KEGG", pathways = pathways)
+
+informe_comp_sex_kegg
+```
+:::
+
+En este caso, aunque sí que hay vías metabólicas cuyos genes cambian de expresión según el sexo (como la vía de señalización mTOR, vías del metabolismo de hidratos de carbono y ácidos nucleicos...), su fenotipo no cambia diferencialmente entre machos y hermafroditas, respaldando la hipótesis nula competitiva.
+
+### ¿Influye el ayuno en la expresión génica?
+
+::: panel-tabset
+### Hipótesis autocontenida
+
+```{r}
+#| label: fast_kegg_self
+
+gse37305_fast_kegg_self <-GeneSetTest(x = se_eset ,y=tratamiento ,                                         gsc=gscKEGG, test = rowtmod,
+                                      association="pvalue",
+                                      correction="BH",
+                                    GeneNullDistr = "randomization",
+                                  GeneSetNullDistr ="self-contained",
+                                      alternative="less",
+                                      nmax = 1000,
+                                    id = "ENTREZID",descriptive=mean)
+
+print("Número de grupos de genes estadísticamente significativos para la hipótesis auto-contenida según la dieta, usando la base de datos KEGG:")
+self_fast_k<-data.frame(gse37305_fast_kegg_self@GeneSetData,
+                        gse37305_fast_kegg_self@GeneSetStat)
+colnames(self_fast_k)[which(colnames(self_fast_k) == "GO")] <- "KEGG"
+
+self_fast_k$KEGG <- ifelse(grepl("^cel", self_fast_k$KEGG),
+                          self_fast_k$KEGG,
+                          paste0("cel", self_fast_k$KEGG))
+
+sum(self_fast_k$adjp<.05)
+
+informe_self_fast_kegg<-generate_gsa_report(self_fast_k, title = "Análisis de grupos de genes KEGG según la dieta", threshold=0.05, analysis_type = "KEGG", pathways = pathways)
+
+informe_self_fast_kegg
+```
+
+### Hipótesis competitiva
+
+```{r}
+#| label: fast_kegg_comp
+#| eval: true
+gse3705_fast_kegg_comp<- GeneSetTest(x = se_eset ,y=tratamiento,                                    gsc=gscKEGG, test = rowtmod,
+                                  association="pvalue",
+                                  correction="BH",
+                                  GeneNullDistr = "randomization",
+                                  GeneSetNullDistr ="competitive",
+                                  alternative="less",
+                                  nmax = 1000,
+                                  id = "ENTREZID",descriptive=mean)
+print("Número de grupos de genes estadísticamente significativos para la hipótesis competitiva según la dieta, usando la base de datos KEGG:")
+comp_fast_k<-data.frame(gse3705_fast_kegg_comp@GeneSetData,
+                        gse3705_fast_kegg_comp@GeneSetStat)
+colnames(comp_fast_k)[which(colnames(comp_fast_k) == "GO")] <- "KEGG"
+
+comp_fast_k$KEGG <- ifelse(grepl("^cel", comp_fast_k$KEGG),
+                          comp_fast_k$KEGG,
+                          paste0("cel", comp_fast_k$KEGG))
+
+sum(comp_fast_k$adjp<.05)
+
+informe_comp_fast_kegg<-generate_gsa_report(comp_fast_k, title = "Análisis de grupos de genes KEGG según la dieta", threshold=0.05, analysis_type = "KEGG", pathways = pathways)
+
+informe_comp_fast_kegg
+```
+:::
+
+Finalmente, el ayuno cambiaría la expresión de genes en el metabolismo de esfingolípidos, de treonina, glicina y serina, y del pool de monocarbonos, pero el fenotipo de ellos no sería lo suficientemente diferente para rechazar la hipótesis nula competitiva.
+
+# Conclusión
+
+Mediante el análisis de este microarray de *Caenorhabditis elegans* se ha podido ver la distinta expresión de genes según el sexo de estos nemátodos, de manera que se encontraban distintas vias metabólicas importantes sobreexpresadas en machos o hermafroditas. Así, cada uno de los sexos estará mejor adaptado a distintas condiciones, por ejemplo de estrés o toxicidad.
+
+Muchas de las diferencias a nivel de expresión, tanto en la variable de sexo, como en animales ayunados o alimentados, así como en su interacción, no se acaban de traducir claramente en grupos de genes que puedan estar asociados a una función.
+Tampoco, los cambios observados en respuesta al ayuno mostraron una asociación clara con procesos biológicos concretos (más allá de algunas diferencias en la división celular y señalización, aunque no sostenidas por todos los análisis), lo que indica que la respuesta a la privación de alimento en *C. elegans*  podría estar modulada por mecanismos compensatorios que mantienen la homeostasis.
+Finalmente, al estudiar ambas condiciones, aunque sí parecía existir esta interacción entre ellas a nivel de genes, estas no se traducen al realizar un análsisi de enriquecimiento en grupo de genes con una función o vía metabólica concreta.
+
+Esto podría tener sentido ya que los cambios estudiados son en nemátodos wild-type, sin ningún tipo de mutación, y estudiando unas variables a las cuales *C. elegans* ya estaría muy adaptado evolutivamente, pudiendo haber desarrollado estrategias que le permitan mantener su viabilidad. Fundamentalmente, según las condiciones de cada grupo de individuos, se puede establecer un patrón metabóico distinto, (por ejemplo en machos ayunados, hermafroditas alimentados...), de manera que a nivel de expresión génica, sí que se encuentra una interacción entre los dos factores estudiados.
+
+En conclusión, se presupone que *C. elegans* está muy adaptado según el sexo a el ayuno ya que, aunque se han encontrado gene metabólicos expresados diferentemente en las distintas condiciones y su interacción, no se han trasladado prácticamente a ningún grupo de gen en concreto. No obstante, entre sexos sí que se han encontrado perfiles metabólicos y de división celular distintos.
+Así, la presión evolutiva permite ligeros cambios sin alterar las funciones principales de los organismos que puedan comprometer su viabilidad.
+
